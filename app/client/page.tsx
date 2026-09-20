@@ -10,39 +10,22 @@ import {
   type ReactNode,
 } from "react";
 
-import {
-  getGlobalAdminSettings,
-  saveClientAccount,
-  type ClientAccount,
-} from "../admin/admin-settings";
-
 import "./style.css";
 
 /* =========================================================
    HCS CLIENT PORTAL
    ---------------------------------------------------------
-   SOURCE OF TRUTH:
-   app/admin/admin-settings.ts
-
-   AUTH FLOW:
-   / -> unified login -> hcs-auth-session -> /client
-
-   CLIENT DATA:
-   - Same global client account created by Admin
-   - Same Client ID
-   - Same password
-   - Same status
-   - Same portal access
-   - Same permissions
-   - Same assigned websites
-   - Same assigned services
-   - Live localStorage synchronization
+   AUTH:
+   - MongoDB-backed authentication
+   - /api/auth/me verifies current secure session
+   - /api/auth/logout destroys secure session
 
    IMPORTANT:
-   No dummy client records.
-   No hardcoded website records.
-   No hardcoded SEO records.
-   ========================================================= */
+   - Client account/password are NOT read from localStorage.
+   - Client password is NEVER stored in localStorage.
+   - Operational portal records still use the existing
+     localStorage architecture for now.
+========================================================= */
 
 /* =========================================================
    TYPES
@@ -77,26 +60,53 @@ type Section =
 
 type AnyRecord = Record<string, unknown>;
 
-type ExtendedClientAccount = ClientAccount & {
+type PermissionSource =
+  | string[]
+  | Record<string, boolean>;
+
+type ExtendedClientAccount = {
+  id: string;
+  clientId: string;
+  username: string;
+  email: string;
+
+  name: string;
+  fullName?: string;
+
+  companyName?: string;
+  phone?: string;
+  website?: string;
+
+  plan?: string;
+  assignedManager?: string;
+
+  status: string;
+  active: boolean;
+
+  role: string;
+
+  clientPortalEnabled: boolean;
+
+  permissions?: PermissionSource;
+
+  assignedWebsiteIds?: string[];
+
+  tags?: string[];
+  notes?: string;
+
   services?: unknown[];
   assignedServices?: unknown[];
   serviceAccess?: unknown[];
   selectedServices?: unknown[];
+
   portalData?: AnyRecord;
+
+  createdAt?: string;
+  updatedAt?: string;
+  lastLogin?: string | null;
 };
 
-type AuthSession = {
-  authenticated?: boolean;
-  role?: string;
-  id?: string;
-  clientId?: string;
-  accountId?: string;
-  username?: string;
-  email?: string;
-  name?: string;
-  companyName?: string;
-  loggedInAt?: string;
-};
+type ApiUser = AnyRecord;
 
 type WebsiteRecord = {
   id: string;
@@ -222,11 +232,8 @@ type PortalData = {
    CONSTANTS
 ========================================================= */
 
-const AUTH_SESSION_KEY = "hcs-auth-session";
-
-const ADMIN_SETTINGS_EVENT = "hcs-admin-settings-updated";
-
-const PORTAL_SYNC_EVENT = "hcs-admin-portal-data-updated";
+const PORTAL_SYNC_EVENT =
+  "hcs-admin-portal-data-updated";
 
 const STORAGE_KEYS = {
   websites: [
@@ -390,7 +397,9 @@ function numberValue(
 ): number {
   const number = Number(value);
 
-  return Number.isFinite(number) ? number : fallback;
+  return Number.isFinite(number)
+    ? number
+    : fallback;
 }
 
 function booleanValue(
@@ -412,7 +421,9 @@ function booleanValue(
   return fallback;
 }
 
-function recordArray(value: unknown): AnyRecord[] {
+function recordArray(
+  value: unknown,
+): AnyRecord[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -434,7 +445,8 @@ function readStoredRecords(
 
   for (const key of keys) {
     try {
-      const raw = window.localStorage.getItem(key);
+      const raw =
+        window.localStorage.getItem(key);
 
       if (!raw) {
         continue;
@@ -472,7 +484,7 @@ function readStoredRecords(
         }
       }
     } catch {
-      // Ignore unreadable local storage entries.
+      // Ignore invalid localStorage records.
     }
   }
 
@@ -487,7 +499,9 @@ function valueTokens(
   }
 
   return value
-    .map((item) => String(item).trim())
+    .map((item) =>
+      String(item).trim(),
+    )
     .filter(Boolean);
 }
 
@@ -502,7 +516,8 @@ function normalizeToken(
 function hostToken(
   value: unknown,
 ): string {
-  const source = String(value ?? "").trim();
+  const source =
+    String(value ?? "").trim();
 
   if (!source) {
     return "";
@@ -516,8 +531,7 @@ function hostToken(
         : `https://${source}`;
 
     return new URL(normalized)
-      .hostname
-      .toLowerCase()
+      .hostname.toLowerCase()
       .replace(/^www\./, "");
   } catch {
     return source
@@ -542,7 +556,9 @@ function tokensFromFields(
       value !== null &&
       value !== ""
     ) {
-      tokens.push(normalizeToken(value));
+      tokens.push(
+        normalizeToken(value),
+      );
     }
   }
 
@@ -550,7 +566,7 @@ function tokensFromFields(
 }
 
 function formatDate(
-  value: string | undefined,
+  value: string | undefined | null,
 ): string {
   if (!value) {
     return "—";
@@ -562,17 +578,20 @@ function formatDate(
     return value;
   }
 
-  return date.toLocaleString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return date.toLocaleString(
+    "en-IN",
+    {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    },
+  );
 }
 
 function formatDateOnly(
-  value: string | undefined,
+  value: string | undefined | null,
 ): string {
   if (!value) {
     return "—";
@@ -584,11 +603,14 @@ function formatDateOnly(
     return value;
   }
 
-  return date.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
+  return date.toLocaleDateString(
+    "en-IN",
+    {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    },
+  );
 }
 
 function initials(
@@ -605,7 +627,9 @@ function initials(
     .filter(Boolean);
 
   if (parts.length === 1) {
-    return parts[0].slice(0, 2).toUpperCase();
+    return parts[0]
+      .slice(0, 2)
+      .toUpperCase();
   }
 
   return (
@@ -613,84 +637,196 @@ function initials(
   ).toUpperCase();
 }
 
-function parseSession(): AuthSession | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
+/* =========================================================
+   API CLIENT NORMALIZER
+========================================================= */
 
-  try {
-    const raw =
-      window.localStorage.getItem(
-        AUTH_SESSION_KEY,
-      );
+function normalizeClientFromApi(
+  value: ApiUser,
+): ExtendedClientAccount {
+  return {
+    id: stringValue(
+      value.id ??
+        value._id ??
+        value.clientId,
+    ),
 
-    if (!raw) {
-      return null;
-    }
+    clientId: stringValue(
+      value.clientId ??
+        value.id,
+    ),
 
-    const parsed = JSON.parse(
-      raw,
-    ) as AuthSession;
+    username: stringValue(
+      value.username,
+    ),
 
-    if (
-      !parsed ||
-      typeof parsed !== "object"
-    ) {
-      return null;
-    }
+    email: stringValue(
+      value.email,
+    ),
 
-    return parsed;
-  } catch {
-    return null;
-  }
-}
+    name: stringValue(
+      value.name ??
+        value.fullName ??
+        value.companyName,
+      "Client",
+    ),
 
-function findCurrentClient(
-  session: AuthSession,
-): ClientAccount | null {
-  const settings =
-    getGlobalAdminSettings();
+    fullName: stringValue(
+      value.fullName ??
+        value.name,
+    ),
 
-  const clients =
-    Array.isArray(settings.clients)
-      ? settings.clients
-      : [];
+    companyName:
+      stringValue(
+        value.companyName,
+      ) || undefined,
 
-  const identifiers = [
-    session.clientId,
-    session.accountId,
-    session.username,
-    session.email,
-    session.id,
-  ]
-    .filter(Boolean)
-    .map(normalizeToken);
+    phone:
+      stringValue(value.phone) ||
+      undefined,
 
-  if (!identifiers.length) {
-    return null;
-  }
+    website:
+      stringValue(value.website) ||
+      undefined,
 
-  return (
-    clients.find((client) => {
-      const clientIdentifiers = [
-        client.clientId,
-        client.id,
-        client.username,
-        client.email,
-      ]
-        .filter(Boolean)
-        .map(normalizeToken);
+    plan:
+      stringValue(value.plan) ||
+      undefined,
 
-      return clientIdentifiers.some(
-        (value) =>
-          identifiers.includes(value),
-      );
-    }) ?? null
-  );
+    assignedManager:
+      stringValue(
+        value.assignedManager,
+      ) || undefined,
+
+    status: stringValue(
+      value.status,
+      "Active",
+    ),
+
+    active: booleanValue(
+      value.active,
+      true,
+    ),
+
+    role: stringValue(
+      value.role,
+      "client",
+    ),
+
+    clientPortalEnabled:
+      value.clientPortalEnabled !==
+      false,
+
+    permissions:
+      Array.isArray(
+        value.permissions,
+      )
+        ? value.permissions
+            .filter(
+              (
+                item,
+              ): item is string =>
+                typeof item ===
+                "string",
+            )
+        : value.permissions &&
+            typeof value.permissions ===
+              "object" &&
+            !Array.isArray(
+              value.permissions,
+            )
+          ? (value.permissions as Record<
+              string,
+              boolean
+            >)
+          : undefined,
+
+    assignedWebsiteIds:
+      Array.isArray(
+        value.assignedWebsiteIds,
+      )
+        ? value.assignedWebsiteIds
+            .filter(
+              (
+                item,
+              ): item is string =>
+                typeof item ===
+                "string",
+            )
+        : [],
+
+    tags:
+      Array.isArray(value.tags)
+        ? value.tags.filter(
+            (
+              item,
+            ): item is string =>
+              typeof item ===
+              "string",
+          )
+        : [],
+
+    notes:
+      stringValue(
+        value.notes,
+      ) || undefined,
+
+    services: Array.isArray(
+      value.services,
+    )
+      ? value.services
+      : [],
+
+    assignedServices:
+      Array.isArray(
+        value.assignedServices,
+      )
+        ? value.assignedServices
+        : [],
+
+    serviceAccess:
+      Array.isArray(
+        value.serviceAccess,
+      )
+        ? value.serviceAccess
+        : [],
+
+    selectedServices:
+      Array.isArray(
+        value.selectedServices,
+      )
+        ? value.selectedServices
+        : [],
+
+    portalData:
+      value.portalData &&
+      typeof value.portalData ===
+        "object" &&
+      !Array.isArray(
+        value.portalData,
+      )
+        ? (value.portalData as AnyRecord)
+        : undefined,
+
+    createdAt:
+      stringValue(
+        value.createdAt,
+      ) || undefined,
+
+    updatedAt:
+      stringValue(
+        value.updatedAt,
+      ) || undefined,
+
+    lastLogin:
+      value.lastLogin
+        ? String(value.lastLogin)
+        : null,
+  };
 }
 
 /* =========================================================
-   PERMISSION NORMALIZATION
+   PERMISSIONS
 ========================================================= */
 
 function permissionEnabled(
@@ -702,20 +838,36 @@ function permissionEnabled(
   }
 
   if (permission === "dashboard") {
+    if (!client.permissions) {
+      return true;
+    }
+
+    if (
+      Array.isArray(
+        client.permissions,
+      )
+    ) {
+      return true;
+    }
+
     return (
-      client.permissions?.dashboard !== false
+      client.permissions.dashboard !==
+      false
     );
   }
 
   const permissions =
-    client.permissions ?? {};
+    client.permissions;
 
   const aliases: Record<
     PermissionKey,
     string[]
   > = {
     dashboard: ["dashboard"],
-    websites: ["websites", "website"],
+    websites: [
+      "websites",
+      "website",
+    ],
     keywords: [
       "keywords",
       "seo",
@@ -745,13 +897,38 @@ function permissionEnabled(
 
   const keys = aliases[permission];
 
-  return keys.some(
-    (key) => permissions[key] === true,
-  );
+  if (
+    Array.isArray(permissions)
+  ) {
+    const normalized =
+      permissions.map(
+        normalizeToken,
+      );
+
+    return keys.some((key) =>
+      normalized.includes(
+        normalizeToken(key),
+      ),
+    );
+  }
+
+  if (
+    permissions &&
+    typeof permissions ===
+      "object"
+  ) {
+    return keys.some(
+      (key) =>
+        permissions[key] ===
+        true,
+    );
+  }
+
+  return false;
 }
 
 /* =========================================================
-   WEBSITE ASSIGNMENT FILTER
+   WEBSITE ASSIGNMENT
 ========================================================= */
 
 function recordBelongsToCurrentClient(
@@ -816,7 +993,9 @@ function recordBelongsToCurrentClient(
   if (
     recordWebsiteTokens.some(
       (token) =>
-        assignedWebsiteIds.has(token) ||
+        assignedWebsiteIds.has(
+          token,
+        ) ||
         websiteTokens.has(token),
     )
   ) {
@@ -843,7 +1022,7 @@ function recordBelongsToCurrentClient(
 }
 
 /* =========================================================
-   LIVE PORTAL DATA
+   PORTAL DATA
 ========================================================= */
 
 function buildPortalData(
@@ -862,67 +1041,68 @@ function buildPortalData(
     competitors: [],
   };
 
-  if (typeof window === "undefined") {
+  if (
+    typeof window ===
+    "undefined"
+  ) {
     return emptyData;
   }
 
   const explicit =
     client.portalData &&
-    typeof client.portalData === "object"
+    typeof client.portalData ===
+      "object"
       ? client.portalData
       : {};
 
-  /*
-    Websites are primarily controlled by
-    assignedWebsiteIds from Admin.
-  */
   const websiteRows =
     readStoredRecords(
       STORAGE_KEYS.websites,
     );
 
-  const assignedIds = new Set(
-    valueTokens(
-      client.assignedWebsiteIds,
-    ).map(normalizeToken),
-  );
+  const assignedIds =
+    new Set(
+      valueTokens(
+        client.assignedWebsiteIds,
+      ).map(normalizeToken),
+    );
 
   const assignedWebsites =
-    websiteRows.filter((record) => {
-      const recordId = normalizeToken(
-        record.id ??
-          record._id ??
-          record.websiteId,
-      );
+    websiteRows.filter(
+      (record) => {
+        const recordId =
+          normalizeToken(
+            record.id ??
+              record._id ??
+              record.websiteId,
+          );
 
-      if (
-        recordId &&
-        assignedIds.has(recordId)
-      ) {
-        return true;
-      }
+        if (
+          recordId &&
+          assignedIds.has(
+            recordId,
+          )
+        ) {
+          return true;
+        }
 
-      return recordBelongsToCurrentClient(
-        record,
-        client,
-        assignedIds,
-        new Set(),
-        new Set(),
-      );
-    });
+        return recordBelongsToCurrentClient(
+          record,
+          client,
+          assignedIds,
+          new Set(),
+          new Set(),
+        );
+      },
+    );
 
-  /*
-    Build website tokens from assigned sites.
-  */
   const websiteTokens =
     new Set<string>();
 
   const websiteHosts =
     new Set<string>();
 
-  for (
-    const website of assignedWebsites
-  ) {
+  for (const website of assignedWebsites) {
     tokensFromFields(
       website,
       [
@@ -937,7 +1117,9 @@ function buildPortalData(
         "siteName",
       ],
     ).forEach((token) =>
-      websiteTokens.add(token),
+      websiteTokens.add(
+        token,
+      ),
     );
 
     [
@@ -952,13 +1134,11 @@ function buildPortalData(
       );
   }
 
-  /*
-    Client website field can also act as a
-    direct website relationship.
-  */
   if (client.website) {
     const clientWebsiteToken =
-      normalizeToken(client.website);
+      normalizeToken(
+        client.website,
+      );
 
     if (clientWebsiteToken) {
       websiteTokens.add(
@@ -967,10 +1147,14 @@ function buildPortalData(
     }
 
     const clientHost =
-      hostToken(client.website);
+      hostToken(
+        client.website,
+      );
 
     if (clientHost) {
-      websiteHosts.add(clientHost);
+      websiteHosts.add(
+        clientHost,
+      );
     }
   }
 
@@ -998,21 +1182,17 @@ function buildPortalData(
       );
 
     const filtered =
-      storedRows.filter((record) =>
-        recordBelongsToCurrentClient(
-          record,
-          client,
-          assignedIds,
-          websiteTokens,
-          websiteHosts,
-        ),
+      storedRows.filter(
+        (record) =>
+          recordBelongsToCurrentClient(
+            record,
+            client,
+            assignedIds,
+            websiteTokens,
+            websiteHosts,
+          ),
       );
 
-    /*
-      Explicit portal data is already
-      inside the current client record,
-      therefore it is safe to include.
-    */
     return [
       ...portalRows,
       ...filtered,
@@ -1020,45 +1200,59 @@ function buildPortalData(
   };
 
   return {
-    websites: assignedWebsites.map(
-      normalizeWebsite,
-    ),
+    websites:
+      assignedWebsites.map(
+        normalizeWebsite,
+      ),
 
-    keywords: resolveModule(
-      "keywords",
-    ).map(normalizeKeyword),
+    keywords:
+      resolveModule(
+        "keywords",
+      ).map(normalizeKeyword),
 
-    rankings: resolveModule(
-      "rankings",
-    ).map(normalizeRanking),
+    rankings:
+      resolveModule(
+        "rankings",
+      ).map(normalizeRanking),
 
-    pages: resolveModule(
-      "pages",
-    ).map(normalizePage),
+    pages:
+      resolveModule(
+        "pages",
+      ).map(normalizePage),
 
-    blogs: resolveModule(
-      "blogs",
-    ).map(normalizeBlog),
+    blogs:
+      resolveModule(
+        "blogs",
+      ).map(normalizeBlog),
 
-    backlinks: resolveModule(
-      "backlinks",
-    ).map(normalizeBacklink),
+    backlinks:
+      resolveModule(
+        "backlinks",
+      ).map(normalizeBacklink),
 
-    technical: resolveModule(
-      "technical",
-    ).map(normalizeTechnical),
+    technical:
+      resolveModule(
+        "technical",
+      ).map(normalizeTechnical),
 
-    reports: resolveModule(
-      "reports",
-    ).map(normalizeReport),
+    reports:
+      resolveModule(
+        "reports",
+      ).map(normalizeReport),
 
-    notifications: resolveModule(
-      "notifications",
-    ).map(normalizeNotification),
+    notifications:
+      resolveModule(
+        "notifications",
+      ).map(
+        normalizeNotification,
+      ),
 
-    competitors: resolveModule(
-      "competitors",
-    ).map(normalizeCompetitor),
+    competitors:
+      resolveModule(
+        "competitors",
+      ).map(
+        normalizeCompetitor,
+      ),
   };
 }
 
@@ -1155,7 +1349,8 @@ function normalizeKeyword(
 
     volume:
       record.volume === null ||
-      record.volume === undefined
+      record.volume ===
+        undefined
         ? null
         : numberValue(
             record.volume,
@@ -1194,11 +1389,14 @@ function normalizeRanking(
     ),
 
     position:
-      record.position === null ||
-      record.position === undefined
+      record.position ===
+        null ||
+      record.position ===
+        undefined
         ? record.currentRank ===
             null ||
-          record.currentRank === undefined
+          record.currentRank ===
+            undefined
           ? null
           : numberValue(
               record.currentRank,
@@ -1211,12 +1409,13 @@ function normalizeRanking(
 
     previousPosition:
       record.previousPosition ===
-        null ||
-      record.previousPosition ===
-        undefined
+          null ||
+        record.previousPosition ===
+          undefined
         ? record.previousRank ===
             null ||
-          record.previousRank === undefined
+          record.previousRank ===
+            undefined
           ? null
           : numberValue(
               record.previousRank,
@@ -1586,7 +1785,7 @@ function normalizeCompetitor(
 }
 
 /* =========================================================
-   SERVICE PARSER
+   SERVICES
 ========================================================= */
 
 function getClientServices(
@@ -1596,15 +1795,11 @@ function getClientServices(
     return [];
   }
 
-  const raw = client as
-    ExtendedClientAccount &
-      Record<string, unknown>;
-
   const source =
-    raw.services ??
-    raw.assignedServices ??
-    raw.serviceAccess ??
-    raw.selectedServices;
+    client.services ??
+    client.assignedServices ??
+    client.serviceAccess ??
+    client.selectedServices;
 
   if (!Array.isArray(source)) {
     return [];
@@ -1613,7 +1808,8 @@ function getClientServices(
   return source
     .map((item, index) => {
       if (typeof item === "string") {
-        const name = item.trim();
+        const name =
+          item.trim();
 
         if (!name) {
           return null;
@@ -1657,23 +1853,28 @@ function getClientServices(
 
         name,
 
-        description: stringValue(
-          record.description,
-        ),
+        description:
+          stringValue(
+            record.description,
+          ),
 
-        status: stringValue(
-          record.status,
-          "Active",
-        ),
+        status:
+          stringValue(
+            record.status,
+            "Active",
+          ),
 
-        startedAt: stringValue(
-          record.startedAt ??
-            record.startDate,
-        ),
+        startedAt:
+          stringValue(
+            record.startedAt ??
+              record.startDate,
+          ),
       };
     })
     .filter(
-      (item): item is ServiceRecord =>
+      (
+        item,
+      ): item is ServiceRecord =>
         Boolean(item),
     );
 }
@@ -1685,40 +1886,35 @@ function getClientServices(
 export default function ClientPage() {
   const router = useRouter();
 
-  const [
-    loading,
-    setLoading,
-  ] = useState(true);
+  const [loading, setLoading] =
+    useState(true);
 
-  const [
-    client,
-    setClient,
-  ] = useState<ExtendedClientAccount | null>(
-    null,
-  );
+  const [client, setClient] =
+    useState<ExtendedClientAccount | null>(
+      null,
+    );
 
   const [
     portalData,
     setPortalData,
-  ] = useState<PortalData>({
-    websites: [],
-    keywords: [],
-    rankings: [],
-    pages: [],
-    blogs: [],
-    backlinks: [],
-    technical: [],
-    reports: [],
-    notifications: [],
-    competitors: [],
-  });
+  ] =
+    useState<PortalData>({
+      websites: [],
+      keywords: [],
+      rankings: [],
+      pages: [],
+      blogs: [],
+      backlinks: [],
+      technical: [],
+      reports: [],
+      notifications: [],
+      competitors: [],
+    });
 
-  const [
-    section,
-    setSection,
-  ] = useState<Section>(
-    "dashboard",
-  );
+  const [section, setSection] =
+    useState<Section>(
+      "dashboard",
+    );
 
   const [
     selectedWebsiteId,
@@ -1740,15 +1936,11 @@ export default function ClientPage() {
     setNotificationOpen,
   ] = useState(false);
 
-  const [
-    search,
-    setSearch,
-  ] = useState("");
+  const [search, setSearch] =
+    useState("");
 
-  const [
-    toast,
-    setToast,
-  ] = useState("");
+  const [toast, setToast] =
+    useState("");
 
   const [
     lastUpdated,
@@ -1783,158 +1975,212 @@ export default function ClientPage() {
      TOAST
   ======================================================== */
 
-  const showToast = useCallback(
-    (message: string) => {
-      setToast(message);
+  const showToast =
+    useCallback(
+      (message: string) => {
+        setToast(message);
 
-      window.setTimeout(() => {
-        setToast("");
-      }, 2800);
-    },
-    [],
-  );
+        window.setTimeout(
+          () => {
+            setToast("");
+          },
+          2800,
+        );
+      },
+      [],
+    );
 
   /* =======================================================
      LOGOUT
   ======================================================== */
 
-  const logout = useCallback(() => {
-    try {
-      window.localStorage.removeItem(
-        AUTH_SESSION_KEY,
-      );
-    } catch {
-      // Ignore logout storage failure.
-    }
+  const logout =
+    useCallback(async () => {
+      try {
+        await fetch(
+          "/api/auth/logout",
+          {
+            method: "POST",
+            credentials: "include",
+            cache: "no-store",
+          },
+        );
+      } catch {
+        // Ignore logout request failure.
+      }
 
-    setClient(null);
-    setPortalData({
-      websites: [],
-      keywords: [],
-      rankings: [],
-      pages: [],
-      blogs: [],
-      backlinks: [],
-      technical: [],
-      reports: [],
-      notifications: [],
-      competitors: [],
-    });
+      setClient(null);
 
-    router.replace("/");
-  }, [router]);
+      setPortalData({
+        websites: [],
+        keywords: [],
+        rankings: [],
+        pages: [],
+        blogs: [],
+        backlinks: [],
+        technical: [],
+        reports: [],
+        notifications: [],
+        competitors: [],
+      });
+
+      router.replace("/");
+    }, [router]);
 
   /* =======================================================
      AUTH + DATA SYNC
   ======================================================== */
 
-  const syncClient = useCallback(
-    (showMessage = false) => {
-      const session =
-        parseSession();
-
-      if (
-        !session ||
-        session.authenticated !== true ||
-        session.role !== "client"
-      ) {
-        router.replace("/");
-        return;
-      }
-
-      const currentClient =
-        findCurrentClient(
-          session,
-        ) as ExtendedClientAccount | null;
-
-      if (
-        !currentClient ||
-        currentClient.role !== "client" ||
-        currentClient.status !== "Active" ||
-        currentClient.active === false ||
-        currentClient.clientPortalEnabled ===
-          false
-      ) {
+  const syncClient =
+    useCallback(
+      async (
+        showMessage = false,
+      ) => {
         try {
-          window.localStorage.removeItem(
-            AUTH_SESSION_KEY,
+          const response =
+            await fetch(
+              "/api/auth/me",
+              {
+                method: "GET",
+                credentials: "include",
+                cache: "no-store",
+                headers: {
+                  Accept:
+                    "application/json",
+                },
+              },
+            );
+
+          const data =
+            await response
+              .json()
+              .catch(
+                () => null,
+              );
+
+          if (
+            !response.ok ||
+            !data?.success ||
+            !data?.user
+          ) {
+            setClient(null);
+            router.replace("/");
+            return;
+          }
+
+          const role =
+            normalizeToken(
+              data.user.role,
+            );
+
+          if (role !== "client") {
+            setClient(null);
+            router.replace("/");
+            return;
+          }
+
+          const currentClient =
+            normalizeClientFromApi(
+              data.user,
+            );
+
+          const currentStatus =
+            normalizeToken(
+              currentClient.status,
+            );
+
+          if (
+            currentStatus !==
+              "active" ||
+            currentClient.active ===
+              false ||
+            currentClient.clientPortalEnabled ===
+              false
+          ) {
+            await fetch(
+              "/api/auth/logout",
+              {
+                method: "POST",
+                credentials:
+                  "include",
+                cache:
+                  "no-store",
+              },
+            ).catch(() => {});
+
+            setClient(null);
+            router.replace("/");
+            return;
+          }
+
+          setClient(
+            currentClient,
           );
+
+          setPortalData(
+            buildPortalData(
+              currentClient,
+            ),
+          );
+
+          setLastUpdated(
+            new Date().toISOString(),
+          );
+
+          if (showMessage) {
+            showToast(
+              "Latest HCS data loaded.",
+            );
+          }
         } catch {
-          // Ignore.
+          setClient(null);
+          router.replace("/");
         }
-
-        setClient(null);
-        router.replace("/");
-        return;
-      }
-
-      setClient(currentClient);
-
-      setPortalData(
-        buildPortalData(
-          currentClient,
-        ),
-      );
-
-      setLastUpdated(
-        new Date().toISOString(),
-      );
-
-      if (showMessage) {
-        showToast(
-          "Latest HCS data loaded.",
-        );
-      }
-    },
-    [router, showToast],
-  );
+      },
+      [router, showToast],
+    );
 
   useEffect(() => {
-    syncClient(false);
-    setLoading(false);
+    let mounted = true;
+
+    syncClient(false).finally(
+      () => {
+        if (mounted) {
+          setLoading(false);
+        }
+      },
+    );
+
+    return () => {
+      mounted = false;
+    };
   }, [syncClient]);
 
   useEffect(() => {
-    const handleAdminUpdate = () => {
-      syncClient(true);
-    };
-
-    const handlePortalUpdate = () => {
-      syncClient(true);
-    };
+    const handlePortalUpdate =
+      () => {
+        void syncClient(true);
+      };
 
     const handleStorage = (
       event: StorageEvent,
     ) => {
-      if (
-        !event.key ||
-        event.key ===
-          AUTH_SESSION_KEY ||
-        event.key ===
-          "hcs-admin-settings-v6"
-      ) {
-        syncClient(false);
-        return;
-      }
-
       const allKeys =
         Object.values(
           STORAGE_KEYS,
         ).flat();
 
       if (
+        event.key &&
         allKeys.includes(
           event.key,
         )
       ) {
-        syncClient(false);
+        void syncClient(
+          false,
+        );
       }
     };
-
-    window.addEventListener(
-      ADMIN_SETTINGS_EVENT,
-      handleAdminUpdate as EventListener,
-    );
 
     window.addEventListener(
       PORTAL_SYNC_EVENT,
@@ -1947,16 +2193,16 @@ export default function ClientPage() {
     );
 
     const interval =
-      window.setInterval(() => {
-        syncClient(false);
-      }, 5000);
-
-    return () => {
-      window.removeEventListener(
-        ADMIN_SETTINGS_EVENT,
-        handleAdminUpdate as EventListener,
+      window.setInterval(
+        () => {
+          void syncClient(
+            false,
+          );
+        },
+        5000,
       );
 
+    return () => {
       window.removeEventListener(
         PORTAL_SYNC_EVENT,
         handlePortalUpdate as EventListener,
@@ -2010,7 +2256,10 @@ export default function ClientPage() {
           : "profile",
       );
     }
-  }, [client, section]);
+  }, [
+    client,
+    section,
+  ]);
 
   /* =======================================================
      WEBSITE FILTER
@@ -2040,7 +2289,11 @@ export default function ClientPage() {
 
   const filterRowsByWebsite =
     useCallback(
-      <T extends { websiteId: string }>(
+      <
+        T extends {
+          websiteId: string;
+        },
+      >(
         rows: T[],
       ) => {
         if (
@@ -2105,17 +2358,16 @@ export default function ClientPage() {
       portalData.competitors,
     );
 
-  const services =
-    useMemo(
-      () =>
-        getClientServices(
-          client,
-        ),
-      [client],
-    );
+  const services = useMemo(
+    () =>
+      getClientServices(
+        client,
+      ),
+    [client],
+  );
 
   /* =======================================================
-     DASHBOARD METRICS
+     METRICS
   ======================================================== */
 
   const unreadNotifications =
@@ -2181,10 +2433,22 @@ export default function ClientPage() {
       }
     }
 
-    setSection(nextSection);
-    setSidebarOpen(false);
-    setProfileOpen(false);
-    setNotificationOpen(false);
+    setSection(
+      nextSection,
+    );
+
+    setSidebarOpen(
+      false,
+    );
+
+    setProfileOpen(
+      false,
+    );
+
+    setNotificationOpen(
+      false,
+    );
+
     setSearch("");
   };
 
@@ -2193,7 +2457,7 @@ export default function ClientPage() {
   ======================================================== */
 
   const changePassword =
-    () => {
+    async () => {
       if (!client) {
         return;
       }
@@ -2210,45 +2474,11 @@ export default function ClientPage() {
       }
 
       if (
-        passwordState.current !==
-        client.password
-      ) {
-        setPasswordError(
-          "Current password is incorrect.",
-        );
-        return;
-      }
-
-      const security =
-        getGlobalAdminSettings()
-          .security ?? {};
-
-      const minimum = Math.max(
-        8,
-        numberValue(
-          security.minPasswordLength,
-          8,
-        ),
-      );
-
-      const requireUppercase =
-        security.requireUppercase !==
-        false;
-
-      const requireNumber =
-        security.requireNumber !==
-        false;
-
-      const requireSpecial =
-        security.requireSpecialCharacter !==
-        false;
-
-      if (
         passwordState.next.length <
-        minimum
+        8
       ) {
         setPasswordError(
-          `New password must contain at least ${minimum} characters.`,
+          "New password must contain at least 8 characters.",
         );
         return;
       }
@@ -2264,17 +2494,6 @@ export default function ClientPage() {
       }
 
       if (
-        passwordState.next ===
-        client.password
-      ) {
-        setPasswordError(
-          "New password must be different from the current password.",
-        );
-        return;
-      }
-
-      if (
-        requireUppercase &&
         !/[A-Z]/.test(
           passwordState.next,
         )
@@ -2286,7 +2505,6 @@ export default function ClientPage() {
       }
 
       if (
-        requireNumber &&
         !/[0-9]/.test(
           passwordState.next,
         )
@@ -2298,7 +2516,6 @@ export default function ClientPage() {
       }
 
       if (
-        requireSpecial &&
         !/[^A-Za-z0-9]/.test(
           passwordState.next,
         )
@@ -2319,24 +2536,64 @@ export default function ClientPage() {
         return;
       }
 
-      setSavingPassword(true);
+      if (
+        passwordState.current ===
+        passwordState.next
+      ) {
+        setPasswordError(
+          "New password must be different from the current password.",
+        );
+        return;
+      }
+
+      setSavingPassword(
+        true,
+      );
 
       try {
-        const updatedClient = {
-          ...client,
-          password:
-            passwordState.next,
-          updatedAt:
-            new Date().toISOString(),
-        } as ClientAccount;
+        const response =
+          await fetch(
+            "/api/auth/change-password",
+            {
+              method: "POST",
+              credentials:
+                "include",
+              cache:
+                "no-store",
+              headers: {
+                "Content-Type":
+                  "application/json",
+                Accept:
+                  "application/json",
+              },
+              body: JSON.stringify(
+                {
+                  currentPassword:
+                    passwordState.current,
+                  newPassword:
+                    passwordState.next,
+                },
+              ),
+            },
+          );
 
-        saveClientAccount(
-          updatedClient,
-        );
+        const data =
+          await response
+            .json()
+            .catch(
+              () => null,
+            );
 
-        setClient(
-          updatedClient as ExtendedClientAccount,
-        );
+        if (
+          !response.ok ||
+          !data?.success
+        ) {
+          setPasswordError(
+            data?.message ||
+              "Password could not be changed.",
+          );
+          return;
+        }
 
         setPasswordState({
           current: "",
@@ -2353,10 +2610,12 @@ export default function ClientPage() {
         );
       } catch {
         setPasswordError(
-          "Password could not be saved.",
+          "Unable to change password right now.",
         );
       } finally {
-        setSavingPassword(false);
+        setSavingPassword(
+          false,
+        );
       }
     };
 
@@ -2510,10 +2769,12 @@ export default function ClientPage() {
         .sort(
           (a, b) =>
             Date.parse(
-              b.createdAt || "",
+              b.createdAt ||
+                "",
             ) -
             Date.parse(
-              a.createdAt || "",
+              a.createdAt ||
+                "",
             ),
         )
         .slice(0, 5);
@@ -2523,10 +2784,12 @@ export default function ClientPage() {
         .sort(
           (a, b) =>
             Date.parse(
-              b.createdAt || "",
+              b.createdAt ||
+                "",
             ) -
             Date.parse(
-              a.createdAt || "",
+              a.createdAt ||
+                "",
             ),
         )
         .slice(0, 5);
@@ -2540,15 +2803,17 @@ export default function ClientPage() {
             </span>
 
             <h1>
-              Welcome, {displayName}
+              Welcome,{" "}
+              {displayName}
             </h1>
 
             <p>
-              {displayCompany}. This
-              dashboard shows the data,
-              websites and services
-              currently assigned to your
-              HCS account.
+              {displayCompany}.
+              This dashboard shows
+              the data, websites and
+              services currently
+              assigned to your HCS
+              account.
             </p>
           </div>
 
@@ -2558,7 +2823,6 @@ export default function ClientPage() {
           </div>
         </div>
 
-        {/* WEBSITE SELECTOR */}
         {permissionEnabled(
           client,
           "websites",
@@ -2575,7 +2839,9 @@ export default function ClientPage() {
                 "all"
                   ? "All assigned websites"
                   : websites.find(
-                      (website) =>
+                      (
+                        website,
+                      ) =>
                         website.id ===
                         selectedWebsiteId,
                     )?.name ||
@@ -2587,9 +2853,12 @@ export default function ClientPage() {
               value={
                 selectedWebsiteId
               }
-              onChange={(event) =>
+              onChange={(
+                event,
+              ) =>
                 setSelectedWebsiteId(
-                  event.target.value,
+                  event.target
+                    .value,
                 )
               }
             >
@@ -2600,8 +2869,12 @@ export default function ClientPage() {
               {websites.map(
                 (website) => (
                   <option
-                    key={website.id}
-                    value={website.id}
+                    key={
+                      website.id
+                    }
+                    value={
+                      website.id
+                    }
                   >
                     {website.name ||
                       website.domain}
@@ -2612,7 +2885,6 @@ export default function ClientPage() {
           </div>
         ) : null}
 
-        {/* METRICS */}
         <div className="client-stats-grid">
           <MetricCard
             label="Websites"
@@ -2651,8 +2923,8 @@ export default function ClientPage() {
           />
         </div>
 
-        {/* SERVICES */}
-        {services.length > 0 ? (
+        {services.length >
+        0 ? (
           <div className="client-content-card">
             <div className="client-card-header">
               <div>
@@ -2674,7 +2946,9 @@ export default function ClientPage() {
               {services.map(
                 (service) => (
                   <div
-                    key={service.id}
+                    key={
+                      service.id
+                    }
                     className="client-service-card"
                   >
                     <div className="client-service-mark">
@@ -2683,7 +2957,9 @@ export default function ClientPage() {
 
                     <div>
                       <h3>
-                        {service.name}
+                        {
+                          service.name
+                        }
                       </h3>
 
                       {service.description ? (
@@ -2699,7 +2975,9 @@ export default function ClientPage() {
                           service.status,
                         )}`}
                       >
-                        {service.status}
+                        {
+                          service.status
+                        }
                       </span>
                     </div>
                   </div>
@@ -2709,7 +2987,6 @@ export default function ClientPage() {
           </div>
         ) : null}
 
-        {/* LOWER GRID */}
         <div className="client-dashboard-grid">
           <div className="client-content-card">
             <div className="client-card-header">
@@ -2746,12 +3023,16 @@ export default function ClientPage() {
                 {latestReports.map(
                   (report) => (
                     <div
-                      key={report.id}
+                      key={
+                        report.id
+                      }
                       className="client-list-row"
                     >
                       <div>
                         <strong>
-                          {report.title}
+                          {
+                            report.title
+                          }
                         </strong>
 
                         <span>
@@ -2767,7 +3048,9 @@ export default function ClientPage() {
                           report.status,
                         )}`}
                       >
-                        {report.status}
+                        {
+                          report.status
+                        }
                       </span>
                     </div>
                   ),
@@ -2796,7 +3079,9 @@ export default function ClientPage() {
               {unreadNotifications >
               0 ? (
                 <span className="client-count-badge">
-                  {unreadNotifications}
+                  {
+                    unreadNotifications
+                  }
                 </span>
               ) : null}
             </div>
@@ -2806,16 +3091,22 @@ export default function ClientPage() {
                 {latestNotifications.map(
                   (item) => (
                     <div
-                      key={item.id}
+                      key={
+                        item.id
+                      }
                       className="client-list-row client-notification-row"
                     >
                       <div>
                         <strong>
-                          {item.title}
+                          {
+                            item.title
+                          }
                         </strong>
 
                         <span>
-                          {item.message}
+                          {
+                            item.message
+                          }
                         </span>
 
                         <small>
@@ -2877,7 +3168,8 @@ export default function ClientPage() {
               value={search}
               onChange={(event) =>
                 setSearch(
-                  event.target.value,
+                  event.target
+                    .value,
                 )
               }
               placeholder="Search websites..."
@@ -2885,7 +3177,10 @@ export default function ClientPage() {
           </div>
 
           <span className="client-toolbar-count">
-            {filteredWebsitesSearch.length} assigned
+            {
+              filteredWebsitesSearch.length
+            }{" "}
+            assigned
           </span>
         </div>
 
@@ -2894,7 +3189,9 @@ export default function ClientPage() {
             {filteredWebsitesSearch.map(
               (website) => (
                 <button
-                  key={website.id}
+                  key={
+                    website.id
+                  }
                   type="button"
                   className={`client-website-card ${
                     selectedWebsiteId ===
@@ -2921,7 +3218,9 @@ export default function ClientPage() {
                         website.status,
                       )}`}
                     >
-                      {website.status}
+                      {
+                        website.status
+                      }
                     </span>
                   </div>
 
@@ -2986,7 +3285,8 @@ export default function ClientPage() {
               value={search}
               onChange={(event) =>
                 setSearch(
-                  event.target.value,
+                  event.target
+                    .value,
                 )
               }
               placeholder="Search keywords or URLs..."
@@ -2994,7 +3294,10 @@ export default function ClientPage() {
           </div>
 
           <span className="client-toolbar-count">
-            {filteredKeywords.length} records
+            {
+              filteredKeywords.length
+            }{" "}
+            records
           </span>
         </div>
 
@@ -3003,10 +3306,14 @@ export default function ClientPage() {
             <table className="client-table">
               <thead>
                 <tr>
-                  <th>Keyword</th>
+                  <th>
+                    Keyword
+                  </th>
                   <th>Current</th>
                   <th>Previous</th>
-                  <th>Target URL</th>
+                  <th>
+                    Target URL
+                  </th>
                   <th>Volume</th>
                   <th>Status</th>
                 </tr>
@@ -3015,7 +3322,11 @@ export default function ClientPage() {
               <tbody>
                 {filteredKeywords.map(
                   (item) => (
-                    <tr key={item.id}>
+                    <tr
+                      key={
+                        item.id
+                      }
+                    >
                       <td>
                         <strong>
                           {item.keyword ||
@@ -3051,7 +3362,9 @@ export default function ClientPage() {
                             item.status,
                           )}`}
                         >
-                          {item.status}
+                          {
+                            item.status
+                          }
                         </span>
                       </td>
                     </tr>
@@ -3103,7 +3416,8 @@ export default function ClientPage() {
               value={search}
               onChange={(event) =>
                 setSearch(
-                  event.target.value,
+                  event.target
+                    .value,
                 )
               }
               placeholder="Search ranking records..."
@@ -3111,7 +3425,8 @@ export default function ClientPage() {
           </div>
 
           <span className="client-toolbar-count">
-            {rankings.length} records
+            {rankings.length}{" "}
+            records
           </span>
         </div>
 
@@ -3120,63 +3435,74 @@ export default function ClientPage() {
             <table className="client-table">
               <thead>
                 <tr>
-                  <th>Keyword</th>
+                  <th>
+                    Keyword
+                  </th>
                   <th>Current</th>
                   <th>Previous</th>
-                  <th>Target URL</th>
+                  <th>
+                    Target URL
+                  </th>
                   <th>Checked</th>
                 </tr>
               </thead>
 
               <tbody>
                 {rankings
-                  .filter((item) =>
-                    normalizedSearch
-                      ? item.keyword
-                          .toLowerCase()
-                          .includes(
-                            normalizedSearch,
-                          ) ||
-                        item.url
-                          .toLowerCase()
-                          .includes(
-                            normalizedSearch,
-                          )
-                      : true,
+                  .filter(
+                    (item) =>
+                      normalizedSearch
+                        ? item.keyword
+                            .toLowerCase()
+                            .includes(
+                              normalizedSearch,
+                            ) ||
+                          item.url
+                            .toLowerCase()
+                            .includes(
+                              normalizedSearch,
+                            )
+                        : true,
                   )
-                  .map((item) => (
-                    <tr key={item.id}>
-                      <td>
-                        <strong>
-                          {item.keyword ||
-                            "Unnamed keyword"}
-                        </strong>
-                      </td>
+                  .map(
+                    (item) => (
+                      <tr
+                        key={
+                          item.id
+                        }
+                      >
+                        <td>
+                          <strong>
+                            {item.keyword ||
+                              "Unnamed keyword"}
+                          </strong>
+                        </td>
 
-                      <td>
-                        {item.position ??
-                          "—"}
-                      </td>
-
-                      <td>
-                        {item.previousPosition ??
-                          "—"}
-                      </td>
-
-                      <td>
-                        <span className="client-cell-secondary">
-                          {item.url ||
+                        <td>
+                          {item.position ??
                             "—"}
-                        </span>
-                      </td>
+                        </td>
 
-                      <td>
-                        {formatDate(
-                          item.checkedAt,
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                        <td>
+                          {item.previousPosition ??
+                            "—"}
+                        </td>
+
+                        <td>
+                          <span className="client-cell-secondary">
+                            {item.url ||
+                              "—"}
+                          </span>
+                        </td>
+
+                        <td>
+                          {formatDate(
+                            item.checkedAt,
+                          )}
+                        </td>
+                      </tr>
+                    ),
+                  )}
               </tbody>
             </table>
           </div>
@@ -3223,7 +3549,8 @@ export default function ClientPage() {
               value={search}
               onChange={(event) =>
                 setSearch(
-                  event.target.value,
+                  event.target
+                    .value,
                 )
               }
               placeholder="Search pages..."
@@ -3231,7 +3558,8 @@ export default function ClientPage() {
           </div>
 
           <span className="client-toolbar-count">
-            {filteredPages.length} pages
+            {filteredPages.length}{" "}
+            pages
           </span>
         </div>
 
@@ -3245,14 +3573,20 @@ export default function ClientPage() {
                   <th>SEO</th>
                   <th>Index</th>
                   <th>Issues</th>
-                  <th>Updated</th>
+                  <th>
+                    Updated
+                  </th>
                 </tr>
               </thead>
 
               <tbody>
                 {filteredPages.map(
                   (item) => (
-                    <tr key={item.id}>
+                    <tr
+                      key={
+                        item.id
+                      }
+                    >
                       <td>
                         <strong>
                           {item.title ||
@@ -3273,7 +3607,9 @@ export default function ClientPage() {
                             item.seoStatus,
                           )}`}
                         >
-                          {item.seoStatus}
+                          {
+                            item.seoStatus
+                          }
                         </span>
                       </td>
 
@@ -3340,7 +3676,8 @@ export default function ClientPage() {
               value={search}
               onChange={(event) =>
                 setSearch(
-                  event.target.value,
+                  event.target
+                    .value,
                 )
               }
               placeholder="Search blogs..."
@@ -3348,7 +3685,10 @@ export default function ClientPage() {
           </div>
 
           <span className="client-toolbar-count">
-            {filteredBlogs.length} records
+            {
+              filteredBlogs.length
+            }{" "}
+            records
           </span>
         </div>
 
@@ -3370,7 +3710,9 @@ export default function ClientPage() {
                         blog.status,
                       )}`}
                     >
-                      {blog.status}
+                      {
+                        blog.status
+                      }
                     </span>
                   </div>
 
@@ -3401,7 +3743,9 @@ export default function ClientPage() {
 
                   {blog.url ? (
                     <a
-                      href={blog.url}
+                      href={
+                        blog.url
+                      }
                       target="_blank"
                       rel="noreferrer"
                       className="client-outline-button"
@@ -3456,7 +3800,8 @@ export default function ClientPage() {
               value={search}
               onChange={(event) =>
                 setSearch(
-                  event.target.value,
+                  event.target
+                    .value,
                 )
               }
               placeholder="Search backlinks..."
@@ -3464,7 +3809,10 @@ export default function ClientPage() {
           </div>
 
           <span className="client-toolbar-count">
-            {filteredBacklinks.length} records
+            {
+              filteredBacklinks.length
+            }{" "}
+            records
           </span>
         </div>
 
@@ -3484,7 +3832,11 @@ export default function ClientPage() {
               <tbody>
                 {filteredBacklinks.map(
                   (item) => (
-                    <tr key={item.id}>
+                    <tr
+                      key={
+                        item.id
+                      }
+                    >
                       <td>
                         <span className="client-cell-secondary">
                           {item.source ||
@@ -3510,7 +3862,9 @@ export default function ClientPage() {
                             item.status,
                           )}`}
                         >
-                          {item.status}
+                          {
+                            item.status
+                          }
                         </span>
                       </td>
 
@@ -3568,7 +3922,8 @@ export default function ClientPage() {
               value={search}
               onChange={(event) =>
                 setSearch(
-                  event.target.value,
+                  event.target
+                    .value,
                 )
               }
               placeholder="Search technical issues..."
@@ -3576,7 +3931,10 @@ export default function ClientPage() {
           </div>
 
           <span className="client-toolbar-count">
-            {filteredTechnical.length} issues
+            {
+              filteredTechnical.length
+            }{" "}
+            issues
           </span>
         </div>
 
@@ -3594,7 +3952,9 @@ export default function ClientPage() {
                         item.severity,
                       )}`}
                     >
-                      {item.severity}
+                      {
+                        item.severity
+                      }
                     </span>
 
                     <span
@@ -3602,7 +3962,9 @@ export default function ClientPage() {
                         item.status,
                       )}`}
                     >
-                      {item.status}
+                      {
+                        item.status
+                      }
                     </span>
                   </div>
 
@@ -3706,12 +4068,16 @@ export default function ClientPage() {
                         report.status,
                       )}`}
                     >
-                      {report.status}
+                      {
+                        report.status
+                      }
                     </span>
 
                     {report.url ? (
                       <a
-                        href={report.url}
+                        href={
+                          report.url
+                        }
                         target="_blank"
                         rel="noreferrer"
                         className="client-outline-button"
@@ -3764,7 +4130,9 @@ export default function ClientPage() {
             {competitors.map(
               (competitor) => (
                 <article
-                  key={competitor.id}
+                  key={
+                    competitor.id
+                  }
                   className="client-website-card static"
                 >
                   <div className="client-website-card-top">
@@ -3777,7 +4145,9 @@ export default function ClientPage() {
                         competitor.status,
                       )}`}
                     >
-                      {competitor.status}
+                      {
+                        competitor.status
+                      }
                     </span>
                   </div>
 
@@ -3914,7 +4284,9 @@ export default function ClientPage() {
           <div className="client-content-card">
             <div className="client-profile-header">
               <div className="client-avatar large">
-                {displayInitials}
+                {
+                  displayInitials
+                }
               </div>
 
               <div>
@@ -3935,17 +4307,23 @@ export default function ClientPage() {
             <div className="client-detail-grid">
               <DetailItem
                 label="Client ID"
-                value={client.clientId}
+                value={
+                  client.clientId
+                }
               />
 
               <DetailItem
                 label="Username"
-                value={client.username}
+                value={
+                  client.username
+                }
               />
 
               <DetailItem
                 label="Email"
-                value={client.email}
+                value={
+                  client.email
+                }
               />
 
               <DetailItem
@@ -3966,7 +4344,9 @@ export default function ClientPage() {
 
               <DetailItem
                 label="Account Status"
-                value={client.status}
+                value={
+                  client.status
+                }
               />
 
               <DetailItem
@@ -3999,21 +4379,30 @@ export default function ClientPage() {
             </div>
 
             <p className="client-muted-text">
-              Change your client portal password
-              according to the current HCS security
-              policy.
+              Change your client
+              portal password using
+              secure server-side
+              authentication.
             </p>
 
             <button
               type="button"
               className="client-primary-button"
               onClick={() => {
-                setPasswordError("");
-                setPasswordState({
-                  current: "",
-                  next: "",
-                  confirm: "",
-                });
+                setPasswordError(
+                  "",
+                );
+
+                setPasswordState(
+                  {
+                    current:
+                      "",
+                    next: "",
+                    confirm:
+                      "",
+                  },
+                );
+
                 setPasswordModalOpen(
                   true,
                 );
@@ -4051,7 +4440,9 @@ export default function ClientPage() {
 
                 return (
                   <div
-                    key={item.id}
+                    key={
+                      item.id
+                    }
                     className={`client-access-item ${
                       enabled
                         ? "enabled"
@@ -4059,11 +4450,15 @@ export default function ClientPage() {
                     }`}
                   >
                     <span>
-                      {item.icon}
+                      {
+                        item.icon
+                      }
                     </span>
 
                     <strong>
-                      {item.label}
+                      {
+                        item.label
+                      }
                     </strong>
 
                     <small>
@@ -4077,7 +4472,8 @@ export default function ClientPage() {
             </div>
           </div>
 
-          {services.length > 0 ? (
+          {services.length >
+          0 ? (
             <div className="client-content-card">
               <div className="client-card-header">
                 <div>
@@ -4095,12 +4491,16 @@ export default function ClientPage() {
                 {services.map(
                   (service) => (
                     <div
-                      key={service.id}
+                      key={
+                        service.id
+                      }
                       className="client-list-row"
                     >
                       <div>
                         <strong>
-                          {service.name}
+                          {
+                            service.name
+                          }
                         </strong>
 
                         <span>
@@ -4114,7 +4514,9 @@ export default function ClientPage() {
                           service.status,
                         )}`}
                       >
-                        {service.status}
+                        {
+                          service.status
+                        }
                       </span>
                     </div>
                   ),
@@ -4209,23 +4611,19 @@ export default function ClientPage() {
 
   return (
     <div className="client-portal">
-      {/* ================================================
-          MOBILE OVERLAY
-      ================================================= */}
       {sidebarOpen ? (
         <button
           type="button"
           className="client-sidebar-overlay"
           aria-label="Close navigation"
           onClick={() =>
-            setSidebarOpen(false)
+            setSidebarOpen(
+              false,
+            )
           }
         />
       ) : null}
 
-      {/* ================================================
-          SIDEBAR
-      ================================================= */}
       <aside
         className={`client-sidebar ${
           sidebarOpen
@@ -4249,7 +4647,9 @@ export default function ClientPage() {
 
         <div className="client-sidebar-client">
           <div className="client-avatar">
-            {displayInitials}
+            {
+              displayInitials
+            }
           </div>
 
           <div>
@@ -4280,7 +4680,9 @@ export default function ClientPage() {
                     : ""
                 }`}
                 onClick={() =>
-                  navigate(item.id)
+                  navigate(
+                    item.id,
+                  )
                 }
               >
                 <span className="client-nav-icon">
@@ -4301,12 +4703,15 @@ export default function ClientPage() {
           <button
             type="button"
             className={`client-nav-item ${
-              section === "profile"
+              section ===
+              "profile"
                 ? "active"
                 : ""
             }`}
             onClick={() =>
-              navigate("profile")
+              navigate(
+                "profile",
+              )
             }
           >
             <span className="client-nav-icon">
@@ -4323,7 +4728,9 @@ export default function ClientPage() {
           <button
             type="button"
             className="client-logout-button"
-            onClick={logout}
+            onClick={() =>
+              void logout()
+            }
           >
             <span>↪</span>
             Sign out
@@ -4335,11 +4742,7 @@ export default function ClientPage() {
         </div>
       </aside>
 
-      {/* ================================================
-          MAIN
-      ================================================= */}
       <main className="client-main">
-        {/* HEADER */}
         <header className="client-topbar">
           <div className="client-topbar-left">
             <button
@@ -4347,7 +4750,9 @@ export default function ClientPage() {
               className="client-mobile-menu"
               aria-label="Open navigation"
               onClick={() =>
-                setSidebarOpen(true)
+                setSidebarOpen(
+                  true,
+                )
               }
             >
               ☰
@@ -4385,7 +4790,9 @@ export default function ClientPage() {
               type="button"
               className="client-refresh-button"
               onClick={() =>
-                syncClient(true)
+                void syncClient(
+                  true,
+                )
               }
             >
               ↻
@@ -4402,7 +4809,10 @@ export default function ClientPage() {
                   (current) =>
                     !current,
                 );
-                setProfileOpen(false);
+
+                setProfileOpen(
+                  false,
+                );
               }}
             >
               ♢
@@ -4410,7 +4820,9 @@ export default function ClientPage() {
               {unreadNotifications >
               0 ? (
                 <b>
-                  {unreadNotifications}
+                  {
+                    unreadNotifications
+                  }
                 </b>
               ) : null}
             </button>
@@ -4423,13 +4835,16 @@ export default function ClientPage() {
                   (current) =>
                     !current,
                 );
+
                 setNotificationOpen(
                   false,
                 );
               }}
             >
               <span className="client-avatar small">
-                {displayInitials}
+                {
+                  displayInitials
+                }
               </span>
 
               <span>
@@ -4438,7 +4853,9 @@ export default function ClientPage() {
                 </strong>
 
                 <small>
-                  {client.clientId}
+                  {
+                    client.clientId
+                  }
                 </small>
               </span>
 
@@ -4448,7 +4865,6 @@ export default function ClientPage() {
             </button>
           </div>
 
-          {/* PROFILE DROPDOWN */}
           {profileOpen ? (
             <div className="client-dropdown client-profile-dropdown">
               <div className="client-dropdown-header">
@@ -4474,11 +4890,25 @@ export default function ClientPage() {
 
               <button
                 type="button"
-                onClick={() =>
+                onClick={() => {
+                  setPasswordError(
+                    "",
+                  );
+
+                  setPasswordState(
+                    {
+                      current:
+                        "",
+                      next: "",
+                      confirm:
+                        "",
+                    },
+                  );
+
                   setPasswordModalOpen(
                     true,
-                  )
-                }
+                  );
+                }}
               >
                 ••• Change Password
               </button>
@@ -4486,14 +4916,15 @@ export default function ClientPage() {
               <button
                 type="button"
                 className="danger"
-                onClick={logout}
+                onClick={() =>
+                  void logout()
+                }
               >
                 ↪ Sign out
               </button>
             </div>
           ) : null}
 
-          {/* NOTIFICATION DROPDOWN */}
           {notificationOpen ? (
             <div className="client-dropdown client-notification-dropdown">
               <div className="client-dropdown-header">
@@ -4502,18 +4933,26 @@ export default function ClientPage() {
                 </strong>
 
                 <span>
-                  {unreadNotifications} unread
+                  {
+                    unreadNotifications
+                  }{" "}
+                  unread
                 </span>
               </div>
 
               {notifications.length ? (
                 notifications
-                  .slice(0, 6)
+                  .slice(
+                    0,
+                    6,
+                  )
                   .map(
                     (item) => (
                       <button
                         type="button"
-                        key={item.id}
+                        key={
+                          item.id
+                        }
                         className={`client-notification-dropdown-item ${
                           item.read
                             ? ""
@@ -4526,11 +4965,15 @@ export default function ClientPage() {
                         }
                       >
                         <strong>
-                          {item.title}
+                          {
+                            item.title
+                          }
                         </strong>
 
                         <span>
-                          {item.message}
+                          {
+                            item.message
+                          }
                         </span>
                       </button>
                     ),
@@ -4544,12 +4987,10 @@ export default function ClientPage() {
           ) : null}
         </header>
 
-        {/* CONTENT */}
         <div className="client-content">
           {renderCurrentSection()}
         </div>
 
-        {/* FOOTER */}
         <footer className="client-footer">
           <span>
             ©{" "}
@@ -4568,9 +5009,6 @@ export default function ClientPage() {
         </footer>
       </main>
 
-      {/* =================================================
-          PASSWORD MODAL
-      ================================================== */}
       {passwordModalOpen ? (
         <div className="client-modal-overlay">
           <div
@@ -4613,7 +5051,9 @@ export default function ClientPage() {
                   value={
                     passwordState.current
                   }
-                  onChange={(event) =>
+                  onChange={(
+                    event,
+                  ) =>
                     setPasswordState(
                       (current) => ({
                         ...current,
@@ -4637,7 +5077,9 @@ export default function ClientPage() {
                   value={
                     passwordState.next
                   }
-                  onChange={(event) =>
+                  onChange={(
+                    event,
+                  ) =>
                     setPasswordState(
                       (current) => ({
                         ...current,
@@ -4661,7 +5103,9 @@ export default function ClientPage() {
                   value={
                     passwordState.confirm
                   }
-                  onChange={(event) =>
+                  onChange={(
+                    event,
+                  ) =>
                     setPasswordState(
                       (current) => ({
                         ...current,
@@ -4682,9 +5126,11 @@ export default function ClientPage() {
               ) : null}
 
               <div className="client-password-help">
-                Password requirements are
-                inherited from HCS Admin Security
-                Settings.
+                Password requirements:
+                minimum 8 characters,
+                one uppercase letter, one
+                number and one special
+                character.
               </div>
             </div>
 
@@ -4704,8 +5150,8 @@ export default function ClientPage() {
               <button
                 type="button"
                 className="client-primary-button"
-                onClick={
-                  changePassword
+                onClick={() =>
+                  void changePassword()
                 }
                 disabled={
                   savingPassword
@@ -4720,15 +5166,9 @@ export default function ClientPage() {
         </div>
       ) : null}
 
-      {/* =================================================
-          TOAST
-      ================================================== */}
       {toast ? (
         <div className="client-toast">
-          <span>
-            ✓
-          </span>
-
+          <span>✓</span>
           {toast}
         </div>
       ) : null}
@@ -4821,11 +5261,3 @@ function DetailItem({
     </div>
   );
 }
-
-/* =========================================================
-   REPAIR NOTES
-   ---------------------------------------------------------
-   Existing client/admin data flow, localStorage keys, permissions,
-   assigned website filtering, sections, and component structure
-   are intentionally preserved.
-========================================================= */
