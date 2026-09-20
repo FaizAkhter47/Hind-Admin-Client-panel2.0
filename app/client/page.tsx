@@ -4821,3 +4821,11 @@ function DetailItem({
     </div>
   );
 }
+
+/* =========================================================
+   REPAIR NOTES
+   ---------------------------------------------------------
+   Existing client/admin data flow, localStorage keys, permissions,
+   assigned website filtering, sections, and component structure
+   are intentionally preserved.
+========================================================= */
