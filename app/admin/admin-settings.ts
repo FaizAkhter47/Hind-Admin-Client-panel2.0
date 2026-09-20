@@ -24,8 +24,6 @@ export interface GlobalAdminAccount {
   fullName: string;
   username: string;
   email: string;
-  password: string;
-  loginPassword?: string;
   phone: string;
   jobTitle: string;
   department: string;
@@ -65,7 +63,6 @@ export interface ClientAccount {
   name: string;
   companyName: string;
   email: string;
-  password: string;
   role: "client";
   status: "Active" | "Suspended" | "Disabled";
   active: boolean;
@@ -109,7 +106,7 @@ const DEFAULT_SECURITY: SecuritySettings = {
   failedAttemptsLimit: 5,
 };
 
-const DEFAULT_NOTIFICATIONS = {
+const DEFAULT_NOTIFICATIONS: Record<string, unknown> = {
   emailNotifications: true,
   browserNotifications: false,
   systemNotifications: true,
@@ -126,7 +123,7 @@ const DEFAULT_NOTIFICATIONS = {
   criticalOnlyMode: false,
 };
 
-const DEFAULT_APPEARANCE = {
+const DEFAULT_APPEARANCE: Record<string, unknown> = {
   theme: "Light",
   compactMode: false,
   denseTables: false,
@@ -139,7 +136,8 @@ const DEFAULT_APPEARANCE = {
 };
 
 export const DEFAULT_GLOBAL_ADMIN_SETTINGS: GlobalAdminSettings = {
-  version: "7.0",
+  version: "8.0",
+
   general: {
     companyName: "Hind Consultancy Services",
     companyEmail: "info@hindconsultancyservices.com",
@@ -154,14 +152,13 @@ export const DEFAULT_GLOBAL_ADMIN_SETTINGS: GlobalAdminSettings = {
     timeFormat: "12-hour",
     defaultLandingPage: "/admin",
   },
+
   account: {
     adminId: "HCS-ADMIN-001",
     id: "HCS-ADMIN-001",
     fullName: "HCS Administrator",
     username: "hcsadmin",
     email: "admin@hindconsultancyservices.com",
-    password: "Admin@123",
-    loginPassword: "Admin@123",
     phone: "+91 00000 00000",
     jobTitle: "SEO & Operations Administrator",
     department: "SEO & Digital Operations",
@@ -170,181 +167,420 @@ export const DEFAULT_GLOBAL_ADMIN_SETTINGS: GlobalAdminSettings = {
     avatarInitials: "HC",
     active: true,
   },
+
   security: DEFAULT_SECURITY,
   notifications: DEFAULT_NOTIFICATIONS,
   appearance: DEFAULT_APPEARANCE,
   clients: [],
 };
 
-function mergeSettings(
-  incoming: GlobalAdminSettings | null | undefined,
-): GlobalAdminSettings {
-  const parsed = incoming ?? {};
+function cleanString(
+  value: unknown,
+  fallback = "",
+): string {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+
+  return String(value).trim();
+}
+
+function cleanOptionalString(
+  value: unknown,
+): string | undefined {
+  const result = cleanString(value);
+  return result || undefined;
+}
+
+function normalizeAdminAccount(
+  value: unknown,
+): GlobalAdminAccount {
+  const raw =
+    value && typeof value === "object"
+      ? (value as Partial<GlobalAdminAccount>)
+      : {};
+
+  const defaults =
+    DEFAULT_GLOBAL_ADMIN_SETTINGS.account!;
 
   return {
-    ...DEFAULT_GLOBAL_ADMIN_SETTINGS,
-    ...parsed,
-    general: {
-      ...DEFAULT_GLOBAL_ADMIN_SETTINGS.general,
-      ...(parsed.general ?? {}),
-    },
-    account: {
-      ...DEFAULT_GLOBAL_ADMIN_SETTINGS.account,
-      ...(parsed.account ?? {}),
-      fullName:
-        parsed.account?.fullName ||
-        DEFAULT_GLOBAL_ADMIN_SETTINGS.account!.fullName,
-      username:
-        parsed.account?.username ||
-        DEFAULT_GLOBAL_ADMIN_SETTINGS.account!.username,
-      email:
-        parsed.account?.email || DEFAULT_GLOBAL_ADMIN_SETTINGS.account!.email,
-      adminId:
-        parsed.account?.adminId ||
-        parsed.account?.id ||
-        DEFAULT_GLOBAL_ADMIN_SETTINGS.account!.adminId,
-      id:
-        parsed.account?.id ||
-        parsed.account?.adminId ||
-        DEFAULT_GLOBAL_ADMIN_SETTINGS.account!.id,
-      password:
-        parsed.account?.password ||
-        parsed.account?.loginPassword ||
-        DEFAULT_GLOBAL_ADMIN_SETTINGS.account!.password,
-      loginPassword:
-        parsed.account?.loginPassword ||
-        parsed.account?.password ||
-        DEFAULT_GLOBAL_ADMIN_SETTINGS.account!.loginPassword,
-      phone:
-        parsed.account?.phone || DEFAULT_GLOBAL_ADMIN_SETTINGS.account!.phone,
-      jobTitle:
-        parsed.account?.jobTitle ||
-        DEFAULT_GLOBAL_ADMIN_SETTINGS.account!.jobTitle,
-      department:
-        parsed.account?.department ||
-        DEFAULT_GLOBAL_ADMIN_SETTINGS.account!.department,
-      role: parsed.account?.role || DEFAULT_GLOBAL_ADMIN_SETTINGS.account!.role,
-      bio: parsed.account?.bio || DEFAULT_GLOBAL_ADMIN_SETTINGS.account!.bio,
-      avatarInitials:
-        parsed.account?.avatarInitials ||
-        DEFAULT_GLOBAL_ADMIN_SETTINGS.account!.avatarInitials,
-      active: parsed.account?.active ?? true,
-    },
-    security: {
-      ...DEFAULT_GLOBAL_ADMIN_SETTINGS.security,
-      ...(parsed.security ?? {}),
-    },
-    notifications: {
-      ...DEFAULT_GLOBAL_ADMIN_SETTINGS.notifications,
-      ...(parsed.notifications ?? {}),
-    },
-    appearance: {
-      ...DEFAULT_GLOBAL_ADMIN_SETTINGS.appearance,
-      ...(parsed.appearance ?? {}),
-    },
-    clients: Array.isArray(parsed.clients)
-      ? parsed.clients.map(normalizeClientAccount).filter(Boolean) as ClientAccount[]
-      : [],
+    adminId: cleanString(
+      raw.adminId ?? raw.id,
+      defaults.adminId,
+    ),
+
+    id: cleanString(
+      raw.id ?? raw.adminId,
+      defaults.id,
+    ),
+
+    fullName: cleanString(
+      raw.fullName,
+      defaults.fullName,
+    ),
+
+    username: cleanString(
+      raw.username,
+      defaults.username,
+    ),
+
+    email: cleanString(
+      raw.email,
+      defaults.email,
+    ),
+
+    phone: cleanString(
+      raw.phone,
+      defaults.phone,
+    ),
+
+    jobTitle: cleanString(
+      raw.jobTitle,
+      defaults.jobTitle,
+    ),
+
+    department: cleanString(
+      raw.department,
+      defaults.department,
+    ),
+
+    role: cleanString(
+      raw.role,
+      defaults.role,
+    ),
+
+    bio: cleanString(
+      raw.bio,
+      defaults.bio,
+    ),
+
+    avatarInitials: cleanString(
+      raw.avatarInitials,
+      defaults.avatarInitials,
+    ),
+
+    active:
+      typeof raw.active === "boolean"
+        ? raw.active
+        : defaults.active,
   };
 }
 
-function normalizeClientAccount(value: unknown): ClientAccount | null {
-  if (!value || typeof value !== "object") return null;
-  const raw = value as Partial<ClientAccount> & Record<string, unknown>;
-  const clientId = String(raw.clientId ?? raw.id ?? "").trim();
-  const id = String(raw.id ?? clientId).trim();
-  const username = String(raw.username ?? "").trim();
-  const password = String(raw.password ?? raw.loginPassword ?? "").trim();
+function normalizeClientAccount(
+  value: unknown,
+): ClientAccount | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
 
-  if (!id || !clientId || !username || !password) return null;
+  const raw =
+    value as Partial<ClientAccount> &
+      Record<string, unknown>;
 
-  const status = raw.status === "Suspended" || raw.status === "Disabled" ? raw.status : "Active";
-  const serviceSource = raw.services ?? raw.assignedServices ?? raw.serviceAccess ?? raw.selectedServices;
+  const clientId = cleanString(
+    raw.clientId ?? raw.id,
+  );
+
+  const id = cleanString(
+    raw.id ?? clientId,
+  );
+
+  const username = cleanString(
+    raw.username,
+  );
+
+  if (!id || !clientId || !username) {
+    return null;
+  }
+
+  const status: ClientAccount["status"] =
+    raw.status === "Suspended"
+      ? "Suspended"
+      : raw.status === "Disabled"
+        ? "Disabled"
+        : "Active";
+
+  const serviceSource =
+    raw.services ??
+    raw.assignedServices ??
+    raw.serviceAccess ??
+    raw.selectedServices;
+
+  const services: ClientService[] | undefined =
+    Array.isArray(serviceSource)
+      ? serviceSource
+          .map((value, index): ClientService | null => {
+            if (typeof value === "string") {
+              const name = value.trim();
+
+              return name
+                ? {
+                    id: `service-${index + 1}`,
+                    name,
+                    status: "Active",
+                  }
+                : null;
+            }
+
+            if (
+              !value ||
+              typeof value !== "object"
+            ) {
+              return null;
+            }
+
+            const service =
+              value as Record<
+                string,
+                unknown
+              >;
+
+            const name = cleanString(
+              service.name ??
+                service.title ??
+                service.serviceName,
+            );
+
+            if (!name) {
+              return null;
+            }
+
+            return {
+              id: cleanString(
+                service.id ??
+                  service.serviceId ??
+                  service._id ??
+                  `service-${index + 1}`,
+                `service-${index + 1}`,
+              ),
+              name,
+              description:
+                cleanOptionalString(
+                  service.description,
+                ),
+              status:
+                cleanOptionalString(
+                  service.status,
+                ) ?? "Active",
+              startedAt:
+                cleanOptionalString(
+                  service.startedAt,
+                ) ??
+                cleanOptionalString(
+                  service.startDate,
+                ),
+            };
+          })
+          .filter(
+            (item): item is ClientService =>
+              item !== null,
+          )
+      : undefined;
 
   return {
     id,
     clientId,
     username,
-    name: String(raw.name ?? "").trim(),
-    companyName: String(raw.companyName ?? "").trim(),
-    email: String(raw.email ?? "").trim(),
-    password,
+
+    name: cleanString(raw.name),
+    companyName: cleanString(
+      raw.companyName,
+    ),
+    email: cleanString(raw.email),
+
     role: "client",
+
     status,
+
     active:
       raw.active !== false &&
       status === "Active" &&
       raw.clientPortalEnabled !== false,
-    createdAt: String(raw.createdAt ?? new Date().toISOString()),
-    phone: raw.phone ? String(raw.phone) : undefined,
-    website: raw.website ? String(raw.website) : undefined,
-    plan: raw.plan ? String(raw.plan) : undefined,
-    assignedManager: raw.assignedManager ? String(raw.assignedManager) : undefined,
-    lastLogin: raw.lastLogin ? String(raw.lastLogin) : undefined,
-    updatedAt: raw.updatedAt ? String(raw.updatedAt) : undefined,
-    notes: raw.notes ? String(raw.notes) : undefined,
+
+    createdAt: cleanString(
+      raw.createdAt,
+      new Date().toISOString(),
+    ),
+
+    phone: cleanOptionalString(
+      raw.phone,
+    ),
+
+    website: cleanOptionalString(
+      raw.website,
+    ),
+
+    plan: cleanOptionalString(
+      raw.plan,
+    ),
+
+    assignedManager:
+      cleanOptionalString(
+        raw.assignedManager,
+      ),
+
+    lastLogin:
+      cleanOptionalString(
+        raw.lastLogin,
+      ),
+
+    updatedAt:
+      cleanOptionalString(
+        raw.updatedAt,
+      ),
+
+    notes:
+      cleanOptionalString(
+        raw.notes,
+      ),
+
     clientPortalEnabled:
       raw.clientPortalEnabled !== false,
+
     permissions:
-      raw.permissions && typeof raw.permissions === "object"
+      raw.permissions &&
+      typeof raw.permissions ===
+        "object"
         ? Object.fromEntries(
-            Object.entries(raw.permissions as Record<string, unknown>).map(
-              ([key, value]) => [key, Boolean(value)],
+            Object.entries(
+              raw.permissions as Record<
+                string,
+                unknown
+              >,
+            ).map(
+              ([key, item]) => [
+                key,
+                Boolean(item),
+              ],
             ),
           )
         : undefined,
+
     assignedWebsiteIds:
-      Array.isArray(raw.assignedWebsiteIds)
-        ? raw.assignedWebsiteIds.map((value) => String(value).trim()).filter(Boolean)
+      Array.isArray(
+        raw.assignedWebsiteIds,
+      )
+        ? raw.assignedWebsiteIds
+            .map((item) =>
+              String(item).trim(),
+            )
+            .filter(Boolean)
         : undefined,
-    services:
-      Array.isArray(serviceSource)
-        ? serviceSource.map((value, index) => {
-            if (typeof value === "string") {
-              const name = value.trim();
-              return name ? { id: `service-${index + 1}`, name, status: "Active" } : null;
-            }
-            if (!value || typeof value !== "object") return null;
-            const service = value as Record<string, unknown>;
-            const name = String(service.name ?? service.title ?? service.serviceName ?? "").trim();
-            if (!name) return null;
-            return {
-              id: String(service.id ?? service.serviceId ?? service._id ?? `service-${index + 1}`).trim(),
-              name,
-              description: service.description ? String(service.description) : undefined,
-              status: service.status ? String(service.status) : "Active",
-              startedAt: service.startedAt ? String(service.startedAt) : service.startDate ? String(service.startDate) : undefined,
-            };
-          }).filter(Boolean) as ClientService[]
-        : undefined,
+
+    services,
+
     tags:
       Array.isArray(raw.tags)
-        ? raw.tags.map((value) => String(value).trim()).filter(Boolean)
+        ? raw.tags
+            .map((item) =>
+              String(item).trim(),
+            )
+            .filter(Boolean)
         : undefined,
   };
 }
 
+function mergeSettings(
+  incoming:
+    | GlobalAdminSettings
+    | null
+    | undefined,
+): GlobalAdminSettings {
+  const parsed = incoming ?? {};
+
+  const clients = Array.isArray(
+    parsed.clients,
+  )
+    ? parsed.clients
+        .map(normalizeClientAccount)
+        .filter(
+          (item): item is ClientAccount =>
+            item !== null,
+        )
+    : [];
+
+  return {
+    ...DEFAULT_GLOBAL_ADMIN_SETTINGS,
+    ...parsed,
+
+    general: {
+      ...DEFAULT_GLOBAL_ADMIN_SETTINGS.general,
+      ...(parsed.general ?? {}),
+    },
+
+    account: normalizeAdminAccount(
+      parsed.account,
+    ),
+
+    security: {
+      ...DEFAULT_SECURITY,
+      ...(parsed.security ?? {}),
+    },
+
+    notifications: {
+      ...DEFAULT_NOTIFICATIONS,
+      ...(parsed.notifications ?? {}),
+    },
+
+    appearance: {
+      ...DEFAULT_APPEARANCE,
+      ...(parsed.appearance ?? {}),
+    },
+
+    clients,
+  };
+}
+
 function browserSnapshot(): string {
-  if (typeof window === "undefined") return "";
-  return window.localStorage.getItem(ADMIN_SETTINGS_STORAGE_KEY) ?? "";
+  if (typeof window === "undefined") {
+    return "";
+  }
+
+  return (
+    window.localStorage.getItem(
+      ADMIN_SETTINGS_STORAGE_KEY,
+    ) ?? ""
+  );
 }
 
 export function getGlobalAdminSettings(): GlobalAdminSettings {
-  if (typeof window === "undefined") return mergeSettings(DEFAULT_GLOBAL_ADMIN_SETTINGS);
+  if (typeof window === "undefined") {
+    return mergeSettings(
+      DEFAULT_GLOBAL_ADMIN_SETTINGS,
+    );
+  }
 
   try {
-    const raw = window.localStorage.getItem(ADMIN_SETTINGS_STORAGE_KEY);
-    if (!raw) return mergeSettings(DEFAULT_GLOBAL_ADMIN_SETTINGS);
-    return mergeSettings(JSON.parse(raw) as GlobalAdminSettings);
+    const raw =
+      window.localStorage.getItem(
+        ADMIN_SETTINGS_STORAGE_KEY,
+      );
+
+    if (!raw) {
+      return mergeSettings(
+        DEFAULT_GLOBAL_ADMIN_SETTINGS,
+      );
+    }
+
+    return mergeSettings(
+      JSON.parse(raw) as GlobalAdminSettings,
+    );
   } catch {
-    return mergeSettings(DEFAULT_GLOBAL_ADMIN_SETTINGS);
+    return mergeSettings(
+      DEFAULT_GLOBAL_ADMIN_SETTINGS,
+    );
   }
 }
 
-export function saveGlobalAdminSettings(settings: GlobalAdminSettings) {
-  if (typeof window === "undefined") return;
+export function saveGlobalAdminSettings(
+  settings: GlobalAdminSettings,
+) {
+  if (typeof window === "undefined") {
+    return;
+  }
 
-  const normalized = mergeSettings(settings);
+  const normalized =
+    mergeSettings(settings);
 
   window.localStorage.setItem(
     ADMIN_SETTINGS_STORAGE_KEY,
@@ -352,107 +588,167 @@ export function saveGlobalAdminSettings(settings: GlobalAdminSettings) {
   );
 
   window.dispatchEvent(
-    new CustomEvent(ADMIN_SETTINGS_EVENT, {
-      detail: normalized,
-    }),
+    new CustomEvent(
+      ADMIN_SETTINGS_EVENT,
+      {
+        detail: normalized,
+      },
+    ),
   );
 }
 
-export function updateAdminPassword(password: string) {
-  const current = getGlobalAdminSettings();
-  const updated: GlobalAdminSettings = {
-    ...current,
-    account: {
-      ...current.account!,
-      password,
-      loginPassword: password,
-    },
-  };
-
-  saveGlobalAdminSettings(updated);
-  return getGlobalAdminSettings();
-}
-
-export function getAdminLoginCredentials() {
-  const settings = getGlobalAdminSettings();
-  const account = settings.account!;
-
-  return {
-    adminId: account.adminId,
-    username: account.username,
-    email: account.email,
-    password: account.password || account.loginPassword || "",
-    name: account.fullName,
-    role: account.role,
-    active: account.active,
-  };
-}
-
 export function getClientAccounts(): ClientAccount[] {
-  return [...(getGlobalAdminSettings().clients ?? [])];
+  return [
+    ...(getGlobalAdminSettings().clients ??
+      []),
+  ];
 }
 
-export function findClientAccount(identifier: string): ClientAccount | null {
-  const query = identifier.trim().toLowerCase();
-  if (!query) return null;
+export function findClientAccount(
+  identifier: string,
+): ClientAccount | null {
+  const query =
+    identifier.trim().toLowerCase();
+
+  if (!query) {
+    return null;
+  }
 
   return (
-    getClientAccounts().find((client) =>
-      [client.clientId, client.id, client.username, client.email]
-        .filter(Boolean)
-        .some((value) => value.toLowerCase() === query),
+    getClientAccounts().find(
+      (client) =>
+        [
+          client.clientId,
+          client.id,
+          client.username,
+          client.email,
+        ]
+          .filter(Boolean)
+          .some(
+            (value) =>
+              String(value)
+                .trim()
+                .toLowerCase() ===
+              query,
+          ),
     ) ?? null
   );
 }
 
-export function saveClientAccount(client: ClientAccount) {
-  const current = getGlobalAdminSettings();
-  const clients = current.clients ?? [];
-  const next = clients.some((item) => item.id === client.id)
-    ? clients.map((item) => (item.id === client.id ? client : item))
-    : [...clients, client];
+export function saveClientAccount(
+  client: ClientAccount,
+) {
+  const current =
+    getGlobalAdminSettings();
 
-  saveGlobalAdminSettings({ ...current, clients: next });
+  const clients =
+    current.clients ?? [];
+
+  const next = clients.some(
+    (item) => item.id === client.id,
+  )
+    ? clients.map((item) =>
+        item.id === client.id
+          ? {
+              ...client,
+              role: "client" as const,
+            }
+          : item,
+      )
+    : [
+        ...clients,
+        {
+          ...client,
+          role: "client" as const,
+        },
+      ];
+
+  saveGlobalAdminSettings({
+    ...current,
+    clients: next,
+  });
 }
 
-export function deleteClientAccount(clientId: string) {
-  const current = getGlobalAdminSettings();
-  const next = (current.clients ?? []).filter(
-    (client) => client.id !== clientId && client.clientId !== clientId,
-  );
+export function deleteClientAccount(
+  clientId: string,
+) {
+  const current =
+    getGlobalAdminSettings();
 
-  saveGlobalAdminSettings({ ...current, clients: next });
+  const next =
+    (current.clients ?? []).filter(
+      (client) =>
+        client.id !== clientId &&
+        client.clientId !== clientId,
+    );
+
+  saveGlobalAdminSettings({
+    ...current,
+    clients: next,
+  });
 }
 
-function subscribe(callback: () => void) {
-  if (typeof window === "undefined") return () => {};
+function subscribe(
+  callback: () => void,
+) {
+  if (typeof window === "undefined") {
+    return () => {};
+  }
 
-  const handleStorage = (event: StorageEvent) => {
-    if (event.key === ADMIN_SETTINGS_STORAGE_KEY) callback();
+  const handleStorage = (
+    event: StorageEvent,
+  ) => {
+    if (
+      event.key ===
+      ADMIN_SETTINGS_STORAGE_KEY
+    ) {
+      callback();
+    }
   };
 
-  const handleCustom = () => callback();
+  const handleCustom = () => {
+    callback();
+  };
 
-  window.addEventListener("storage", handleStorage);
-  window.addEventListener(ADMIN_SETTINGS_EVENT, handleCustom);
+  window.addEventListener(
+    "storage",
+    handleStorage,
+  );
+
+  window.addEventListener(
+    ADMIN_SETTINGS_EVENT,
+    handleCustom,
+  );
 
   return () => {
-    window.removeEventListener("storage", handleStorage);
-    window.removeEventListener(ADMIN_SETTINGS_EVENT, handleCustom);
+    window.removeEventListener(
+      "storage",
+      handleStorage,
+    );
+
+    window.removeEventListener(
+      ADMIN_SETTINGS_EVENT,
+      handleCustom,
+    );
   };
 }
 
 export function useGlobalAdminSettings() {
-  const snapshot = useSyncExternalStore(
-    subscribe,
-    browserSnapshot,
-    () => "",
-  );
+  const snapshot =
+    useSyncExternalStore(
+      subscribe,
+      browserSnapshot,
+      () => "",
+    );
 
-  if (!snapshot) return DEFAULT_GLOBAL_ADMIN_SETTINGS;
+  if (!snapshot) {
+    return DEFAULT_GLOBAL_ADMIN_SETTINGS;
+  }
 
   try {
-    return mergeSettings(JSON.parse(snapshot) as GlobalAdminSettings);
+    return mergeSettings(
+      JSON.parse(snapshot) as GlobalAdminSettings,
+    );
   } catch {
     return DEFAULT_GLOBAL_ADMIN_SETTINGS;
   }

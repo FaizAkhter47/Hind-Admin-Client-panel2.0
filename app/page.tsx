@@ -9,12 +9,6 @@ import {
   useState,
 } from "react";
 
-import {
-  findClientAccount,
-  getAdminLoginCredentials,
-  updateAdminPassword,
-} from "./admin/admin-settings";
-
 type AuthRole = "admin" | "client";
 
 type AuthScreen =
@@ -24,32 +18,32 @@ type AuthScreen =
   | "reset"
   | "success";
 
+type AuthUser = {
+  id?: string;
+  adminId?: string;
+  clientId?: string;
+  accountId?: string;
+  username?: string;
+  name?: string;
+  fullName?: string;
+  email?: string;
+  companyName?: string;
+  role?: AuthRole | string;
+};
+
 type ApiResponse = {
   success?: boolean;
   message?: string;
   destinationMasked?: string;
   resetToken?: string;
   otpSession?: string;
+  role?: AuthRole;
+  user?: AuthUser;
+  admin?: AuthUser;
+  client?: AuthUser;
 };
 
 const AUTH_SESSION_KEY = "hcs-auth-session";
-
-function normalize(value: string) {
-  return value.trim().toLowerCase();
-}
-
-function createSessionId() {
-  if (
-    typeof crypto !== "undefined" &&
-    typeof crypto.randomUUID === "function"
-  ) {
-    return crypto.randomUUID();
-  }
-
-  return `hcs-session-${Date.now()}-${Math.random()
-    .toString(36)
-    .slice(2)}`;
-}
 
 function passwordRules(password: string) {
   return {
@@ -123,7 +117,11 @@ function ArrowIcon() {
   );
 }
 
-function EyeIcon({ hidden }: { hidden: boolean }) {
+function EyeIcon({
+  hidden,
+}: {
+  hidden: boolean;
+}) {
   return hidden ? (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="M3 3 21 21" />
@@ -157,7 +155,8 @@ export default function Page() {
   const [recoveryIdentifier, setRecoveryIdentifier] =
     useState("");
 
-  const [otp, setOtp] = useState("");
+  const [otp, setOtp] =
+    useState("");
 
   const [otpSession, setOtpSession] =
     useState("");
@@ -174,11 +173,14 @@ export default function Page() {
   const [destinationMasked, setDestinationMasked] =
     useState("");
 
-  const [error, setError] = useState("");
+  const [error, setError] =
+    useState("");
 
-  const [success, setSuccess] = useState("");
+  const [success, setSuccess] =
+    useState("");
 
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] =
+    useState(false);
 
   const [cooldown, setCooldown] =
     useState(0);
@@ -198,44 +200,79 @@ export default function Page() {
   );
 
   useEffect(() => {
-    try {
-      const raw =
-        window.localStorage.getItem(
-          AUTH_SESSION_KEY,
+    let cancelled = false;
+
+    async function restoreServerSession() {
+      try {
+        const response = await fetch(
+          "/api/auth/me",
+          {
+            method: "GET",
+            credentials: "include",
+            cache: "no-store",
+          },
         );
 
-      if (!raw) return;
+        if (!response.ok) {
+          return;
+        }
 
-      const session = JSON.parse(raw) as {
-        authenticated?: boolean;
-        role?: AuthRole;
-      };
+        const data =
+          (await response.json()) as ApiResponse;
 
-      if (!session.authenticated) return;
+        if (
+          cancelled ||
+          !data.success ||
+          !data.role
+        ) {
+          return;
+        }
 
-      if (session.role === "admin") {
-        router.replace("/admin");
-        return;
+        const user =
+          data.user ??
+          data.admin ??
+          data.client;
+
+        if (!user) {
+          return;
+        }
+
+        saveAuthSession(
+          data.role,
+          user,
+        );
+
+        router.replace(
+          data.role === "admin"
+            ? "/admin"
+            : "/client",
+        );
+      } catch {
+        // No active server session.
       }
-
-      if (session.role === "client") {
-        router.replace("/client");
-      }
-    } catch {
-      window.localStorage.removeItem(
-        AUTH_SESSION_KEY,
-      );
     }
+
+    restoreServerSession();
+
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
   useEffect(() => {
-    if (cooldown <= 0) return;
+    if (cooldown <= 0) {
+      return;
+    }
 
-    const timer = window.setInterval(() => {
-      setCooldown((value) =>
-        value > 0 ? value - 1 : 0,
-      );
-    }, 1000);
+    const timer =
+      window.setInterval(() => {
+        setCooldown(
+          (value) =>
+            value > 0
+              ? value - 1
+              : 0,
+        );
+      }, 1000);
 
     return () =>
       window.clearInterval(timer);
@@ -260,11 +297,15 @@ export default function Page() {
   function backToLogin() {
     clearMessages();
     clearRecoveryData();
+    setIdentifier("");
+    setPassword("");
     setRole("admin");
     setScreen("login");
   }
 
-  function changeRole(nextRole: AuthRole) {
+  function changeRole(
+    nextRole: AuthRole,
+  ) {
     setRole(nextRole);
     setIdentifier("");
     setPassword("");
@@ -278,55 +319,57 @@ export default function Page() {
     setScreen("forgot");
   }
 
-  function saveAdminSession() {
-    const admin =
-      getAdminLoginCredentials();
-
-    window.localStorage.setItem(
-      AUTH_SESSION_KEY,
-      JSON.stringify({
-        authenticated: true,
-        role: "admin",
-        id: admin.adminId,
-        accountId: admin.adminId,
-        username: admin.username,
-        name: admin.name,
-        email: admin.email,
-        loggedInAt: new Date().toISOString(),
-        sessionId: createSessionId(),
-      }),
-    );
-  }
-
-  function saveClientSession(
-    client: ReturnType<
-      typeof findClientAccount
-    >,
+  function saveAuthSession(
+    sessionRole: AuthRole,
+    user: AuthUser,
   ) {
-    if (!client) return;
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const userId =
+      user.id ??
+      user.adminId ??
+      user.clientId ??
+      user.accountId ??
+      "";
+
+    const session = {
+      authenticated: true,
+      role: sessionRole,
+      id: userId,
+      adminId:
+        user.adminId ?? undefined,
+      clientId:
+        user.clientId ?? undefined,
+      accountId:
+        user.accountId ??
+        user.id ??
+        undefined,
+      username:
+        user.username ?? "",
+      name:
+        user.name ??
+        user.fullName ??
+        user.companyName ??
+        (sessionRole === "admin"
+          ? "HCS Administrator"
+          : "Client"),
+      companyName:
+        user.companyName ?? "",
+      email:
+        user.email ?? "",
+      loggedInAt:
+        new Date().toISOString(),
+    };
 
     window.localStorage.setItem(
       AUTH_SESSION_KEY,
-      JSON.stringify({
-        authenticated: true,
-        role: "client",
-        id: client.clientId,
-        clientId: client.clientId,
-        accountId: client.id,
-        username: client.username,
-        name:
-          client.name ||
-          client.companyName ||
-          "Client",
-        companyName: client.companyName || "",
-        email: client.email,
-        loggedInAt: new Date().toISOString(),
-        sessionId: createSessionId(),
-      }),
+      JSON.stringify(session),
     );
   }
 
-  function handleLogin(
+  async function handleLogin(
     event: FormEvent<HTMLFormElement>,
   ) {
     event.preventDefault();
@@ -355,72 +398,88 @@ export default function Page() {
     setLoading(true);
 
     try {
-      if (role === "admin") {
-        const admin =
-          getAdminLoginCredentials();
+      const response =
+        await fetch(
+          "/api/auth/login",
+          {
+            method: "POST",
+            credentials: "include",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body: JSON.stringify({
+              role,
+              identifier:
+                cleanIdentifier,
+              password,
+            }),
+          },
+        );
 
-        if (!admin.active) {
-          setError(
-            "Administrator account is disabled. Contact HCS Admin.",
-          );
-          return;
-        }
+      const data =
+        (await response.json()) as ApiResponse;
 
-        const validIdentifiers = [
-          admin.adminId,
-          admin.username,
-          admin.email,
-        ]
-          .filter(Boolean)
-          .map(normalize);
-
-        if (
-          !validIdentifiers.includes(
-            normalize(cleanIdentifier),
-          ) ||
-          password !== admin.password
-        ) {
-          setError(
-            "Invalid Admin ID, username/email, or password.",
-          );
-          return;
-        }
-
-        saveAdminSession();
-        router.push("/admin");
+      if (
+        !response.ok ||
+        !data.success
+      ) {
+        setError(
+          data.message ??
+            "Invalid credentials.",
+        );
         return;
       }
 
-      const client =
-        findClientAccount(
-          cleanIdentifier,
-        );
+      const user =
+        data.user ??
+        data.admin ??
+        data.client;
 
-      if (
-        !client ||
-        !client.active ||
-        client.status !== "Active"
-      ) {
+      const authenticatedRole =
+        data.role ?? role;
+
+      if (!user) {
         setError(
-          "Client account is unavailable. Contact HCS Admin.",
+          "Login succeeded but user session data was not returned.",
         );
         return;
       }
 
       if (
-        password !== client.password
+        authenticatedRole !==
+          "admin" &&
+        authenticatedRole !==
+          "client"
       ) {
         setError(
-          "Invalid client username/email or password.",
+          "Invalid authentication response.",
         );
         return;
       }
 
-      saveClientSession(client);
-      router.push("/client");
-    } catch {
+      saveAuthSession(
+        authenticatedRole,
+        user,
+      );
+
+      setIdentifier("");
+      setPassword("");
+
+      router.replace(
+        authenticatedRole ===
+          "admin"
+          ? "/admin"
+          : "/client",
+      );
+    } catch (loginError) {
+      console.error(
+        "HCS login error:",
+        loginError,
+      );
+
       setError(
-        "Something went wrong while signing in.",
+        "Unable to connect to the authentication server.",
       );
     } finally {
       setLoading(false);
@@ -444,55 +503,76 @@ export default function Page() {
       return;
     }
 
-    if (cooldown > 0) return;
+    if (cooldown > 0) {
+      return;
+    }
 
     setLoading(true);
 
     try {
-      const response = await fetch(
-        "/api/admin/forgot-password/send-otp",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
+      const response =
+        await fetch(
+          "/api/admin/forgot-password/send-otp",
+          {
+            method: "POST",
+            credentials: "include",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body: JSON.stringify({
+              identifier:
+                cleanIdentifier,
+            }),
           },
-          body: JSON.stringify({
-            identifier: cleanIdentifier,
-          }),
-        },
-      );
+        );
 
       const data =
         (await response.json()) as ApiResponse;
 
-      if (!response.ok || !data.success) {
+      if (
+        !response.ok ||
+        !data.success
+      ) {
         setError(
-          data.message ||
+          data.message ??
             "OTP could not be sent.",
         );
         return;
       }
 
+      if (!data.otpSession) {
+        setError(
+          "OTP service did not return a valid recovery session.",
+        );
+        return;
+      }
+
       setDestinationMasked(
-        data.destinationMasked ||
+        data.destinationMasked ??
           "your registered contact",
       );
 
       setOtpSession(
-        data.otpSession || "",
+        data.otpSession,
       );
 
       setSuccess(
-        data.message ||
+        data.message ??
           "OTP sent successfully.",
       );
 
       setOtp("");
       setCooldown(60);
       setScreen("otp");
-    } catch {
+    } catch (sendOtpError) {
+      console.error(
+        "HCS send OTP error:",
+        sendOtpError,
+      );
+
       setError(
-        "Forgot password service is not available yet.",
+        "Forgot password service is not available.",
       );
     } finally {
       setLoading(false);
@@ -506,9 +586,7 @@ export default function Page() {
 
     clearMessages();
 
-    if (
-      !otpSession
-    ) {
+    if (!otpSession) {
       setError(
         "OTP session is missing. Please request a new OTP.",
       );
@@ -525,21 +603,24 @@ export default function Page() {
     setLoading(true);
 
     try {
-      const response = await fetch(
-        "/api/admin/forgot-password/verify-otp",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
+      const response =
+        await fetch(
+          "/api/admin/forgot-password/verify-otp",
+          {
+            method: "POST",
+            credentials: "include",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body: JSON.stringify({
+              identifier:
+                recoveryIdentifier.trim(),
+              otp,
+              otpSession,
+            }),
           },
-          body: JSON.stringify({
-            identifier:
-              recoveryIdentifier.trim(),
-            otp,
-            otpSession,
-          }),
-        },
-      );
+        );
 
       const data =
         (await response.json()) as ApiResponse;
@@ -550,7 +631,7 @@ export default function Page() {
         !data.resetToken
       ) {
         setError(
-          data.message ||
+          data.message ??
             "Invalid or expired OTP.",
         );
         return;
@@ -561,11 +642,18 @@ export default function Page() {
       );
 
       setOtp("");
+
       setSuccess(
         "OTP verified successfully.",
       );
+
       setScreen("reset");
-    } catch {
+    } catch (verifyError) {
+      console.error(
+        "HCS verify OTP error:",
+        verifyError,
+      );
+
       setError(
         "OTP verification failed.",
       );
@@ -636,47 +724,48 @@ export default function Page() {
     setLoading(true);
 
     try {
-      const response = await fetch(
-        "/api/admin/forgot-password/reset-password",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
+      const response =
+        await fetch(
+          "/api/admin/forgot-password/reset-password",
+          {
+            method: "POST",
+            credentials: "include",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body: JSON.stringify({
+              identifier:
+                recoveryIdentifier.trim(),
+              resetToken,
+              newPassword,
+            }),
           },
-          body: JSON.stringify({
-            identifier:
-              recoveryIdentifier.trim(),
-            resetToken,
-            newPassword,
-          }),
-        },
-      );
+        );
 
       const data =
         (await response.json()) as ApiResponse;
 
-      if (!response.ok || !data.success) {
+      if (
+        !response.ok ||
+        !data.success
+      ) {
         setError(
-          data.message ||
+          data.message ??
             "Password reset failed.",
         );
         return;
       }
 
       /*
-       * IMPORTANT:
-       * Current HCS architecture keeps the
-       * canonical Admin settings in browser
-       * localStorage. The API validates the
-       * recovery flow, then we update the
-       * canonical settings here.
+       * Password has already been updated in MongoDB
+       * by the server-side reset-password API.
+       *
+       * DO NOT save it to localStorage.
        */
-      updateAdminPassword(
-        newPassword,
-      );
 
       setSuccess(
-        data.message ||
+        data.message ??
           "Password reset successfully.",
       );
 
@@ -684,8 +773,14 @@ export default function Page() {
       setConfirmPassword("");
       setResetToken("");
       setOtpSession("");
+      setOtp("");
       setScreen("success");
-    } catch {
+    } catch (resetError) {
+      console.error(
+        "HCS reset password error:",
+        resetError,
+      );
+
       setError(
         "Password reset service is not available.",
       );
@@ -746,8 +841,6 @@ export default function Page() {
         />
 
         <section className="hcs-auth-shell">
-          {/* LEFT BRAND PANEL */}
-
           <aside className="hcs-brand-panel">
             <div className="brand-panel-overlay" />
 
@@ -869,8 +962,6 @@ export default function Page() {
             </div>
           </aside>
 
-          {/* RIGHT AUTH PANEL */}
-
           <section className="hcs-auth-panel">
             <div className="auth-panel-header">
               <div className="mobile-logo">
@@ -892,8 +983,6 @@ export default function Page() {
                 </div>
               </div>
             </div>
-
-            {/* LOGIN */}
 
             {screen === "login" && (
               <div className="auth-card">
@@ -1123,13 +1212,12 @@ export default function Page() {
                   </span>
 
                   <span>
-                    HCS-{new Date().getFullYear()}
+                    HCS-
+                    {new Date().getFullYear()}
                   </span>
                 </div>
               </div>
             )}
-
-            {/* FORGOT */}
 
             {screen === "forgot" && (
               <div className="auth-card">
@@ -1278,8 +1366,6 @@ export default function Page() {
                 </div>
               </div>
             )}
-
-            {/* OTP */}
 
             {screen === "otp" && (
               <div className="auth-card">
@@ -1431,7 +1517,9 @@ export default function Page() {
                       loading ||
                       cooldown > 0
                     }
-                    onClick={() => sendOtp()}
+                    onClick={() =>
+                      sendOtp()
+                    }
                   >
                     {cooldown > 0
                       ? `RESEND IN ${cooldown}s`
@@ -1440,8 +1528,6 @@ export default function Page() {
                 </div>
               </div>
             )}
-
-            {/* RESET */}
 
             {screen === "reset" && (
               <div className="auth-card">
@@ -1713,8 +1799,6 @@ export default function Page() {
               </div>
             )}
 
-            {/* SUCCESS */}
-
             {screen === "success" && (
               <div className="auth-card success-card">
                 <div className="success-ring">
@@ -1909,8 +1993,6 @@ export default function Page() {
             0 30px 90px rgba(0, 0, 0, 0.105),
             0 2px 6px rgba(0, 0, 0, 0.03);
         }
-
-        /* BRAND */
 
         .hcs-brand-panel {
           position: relative;
@@ -2135,8 +2217,6 @@ export default function Page() {
           letter-spacing: 0.17em;
           color: rgba(255,255,255,0.28);
         }
-
-        /* AUTH PANEL */
 
         .hcs-auth-panel {
           display: flex;

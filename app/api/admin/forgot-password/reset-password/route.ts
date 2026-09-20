@@ -2,9 +2,15 @@ import { NextResponse } from "next/server";
 import {
   createHmac,
   timingSafeEqual,
+  randomBytes,
+  scrypt as scryptCallback,
 } from "node:crypto";
+import { promisify } from "node:util";
+import { MongoClient } from "mongodb";
 
 export const runtime = "nodejs";
+
+const scrypt = promisify(scryptCallback);
 
 type ResetPayload = {
   kind?: string;
@@ -14,9 +20,82 @@ type ResetPayload = {
   recoveryVerified?: boolean;
 };
 
+let mongoClientPromise: Promise<MongoClient> | null = null;
+
+function getMongoUri() {
+  const uri = process.env.MONGODB_URI?.trim();
+
+  if (!uri) {
+    throw new Error("MONGODB_URI is not configured.");
+  }
+
+  return uri;
+}
+
+function getDatabaseName() {
+  const configured =
+    process.env.MONGODB_DB?.trim() ||
+    process.env.MONGODB_DATABASE?.trim();
+
+  if (configured) {
+    return configured;
+  }
+
+  try {
+    const uri = getMongoUri();
+
+    const withoutProtocol = uri.replace(
+      /^mongodb(?:\+srv)?:\/\//,
+      "",
+    );
+
+    const slashIndex = withoutProtocol.indexOf("/");
+
+    if (slashIndex !== -1) {
+      const afterSlash = withoutProtocol.slice(
+        slashIndex + 1,
+      );
+
+      const databaseName = afterSlash
+        .split("?")[0]
+        .trim();
+
+      if (databaseName) {
+        return decodeURIComponent(databaseName);
+      }
+    }
+  } catch {
+    // Use default DB below.
+  }
+
+  return "hcs";
+}
+
+function getAdminCollectionName() {
+  return (
+    process.env.MONGODB_ADMIN_COLLECTION?.trim() ||
+    "admins"
+  );
+}
+
+async function getMongoClient() {
+  if (!mongoClientPromise) {
+    const client = new MongoClient(
+      getMongoUri(),
+      {
+        maxPoolSize: 10,
+      },
+    );
+
+    mongoClientPromise = client.connect();
+  }
+
+  return mongoClientPromise;
+}
+
 function getSecret() {
   const secret =
-    process.env.HCS_PASSWORD_RESET_SECRET;
+    process.env.HCS_PASSWORD_RESET_SECRET?.trim();
 
   if (!secret) {
     throw new Error(
@@ -38,10 +117,7 @@ function safeEqual(
     return false;
   }
 
-  return timingSafeEqual(
-    left,
-    right,
-  );
+  return timingSafeEqual(left, right);
 }
 
 function decodePayload(
@@ -53,23 +129,16 @@ function decodePayload(
     throw new Error("Invalid token.");
   }
 
-  const [encoded, signature] =
-    parts;
+  const [encoded, signature] = parts;
 
-  const expected =
-    createHmac(
-      "sha256",
-      getSecret(),
-    )
-      .update(encoded)
-      .digest("base64url");
+  const expected = createHmac(
+    "sha256",
+    getSecret(),
+  )
+    .update(encoded)
+    .digest("base64url");
 
-  if (
-    !safeEqual(
-      signature,
-      expected,
-    )
-  ) {
+  if (!safeEqual(signature, expected)) {
     throw new Error(
       "Invalid token signature.",
     );
@@ -97,21 +166,106 @@ function normalizePhone(
     .replace(/[^\d+]/g, "");
 }
 
+function normalizeIdentifier(
+  value: string,
+) {
+  const cleaned = value.trim();
+
+  if (cleaned.includes("@")) {
+    return normalizeEmail(cleaned);
+  }
+
+  return normalizePhone(cleaned);
+}
+
 function validPassword(
   password: string,
 ) {
   return {
-    minLength:
-      password.length >= 8,
-    maxLength:
-      password.length <= 128,
-    uppercase:
-      /[A-Z]/.test(password),
-    number:
-      /[0-9]/.test(password),
-    special:
-      /[^A-Za-z0-9]/.test(password),
+    minLength: password.length >= 8,
+    maxLength: password.length <= 128,
+    uppercase: /[A-Z]/.test(password),
+    number: /[0-9]/.test(password),
+    special: /[^A-Za-z0-9]/.test(password),
   };
+}
+
+async function hashPassword(
+  password: string,
+) {
+  const salt =
+    randomBytes(16).toString("hex");
+
+  const derivedKey =
+    (await scrypt(
+      password,
+      salt,
+      64,
+    )) as Buffer;
+
+  return `scrypt:${salt}:${derivedKey.toString(
+    "hex",
+  )}`;
+}
+
+function escapeRegex(
+  value: string,
+) {
+  return value.replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&",
+  );
+}
+
+async function findAdminByIdentifier(
+  identifier: string,
+) {
+  const client =
+    await getMongoClient();
+
+  const db = client.db(
+    getDatabaseName(),
+  );
+
+  const collection =
+    db.collection(
+      getAdminCollectionName(),
+    );
+
+  const normalized =
+    normalizeIdentifier(identifier);
+
+  if (!normalized) {
+    return null;
+  }
+
+  const isEmail =
+    normalized.includes("@");
+
+  if (isEmail) {
+    return collection.findOne({
+      email: {
+        $regex: `^${escapeRegex(
+          normalized,
+        )}$`,
+        $options: "i",
+      },
+    });
+  }
+
+  const normalizedPhone =
+    normalizePhone(identifier);
+
+  return collection.findOne({
+    $or: [
+      {
+        phone: normalizedPhone,
+      },
+      {
+        phone: identifier.trim(),
+      },
+    ],
+  });
 }
 
 export async function POST(
@@ -150,7 +304,9 @@ export async function POST(
     }
 
     const rules =
-      validPassword(newPassword);
+      validPassword(
+        newPassword,
+      );
 
     if (!rules.minLength) {
       return NextResponse.json(
@@ -240,7 +396,8 @@ export async function POST(
     }
 
     if (
-      payload.recoveryVerified !== true
+      payload.recoveryVerified !==
+      true
     ) {
       return NextResponse.json(
         {
@@ -252,10 +409,14 @@ export async function POST(
       );
     }
 
+    const now =
+      Math.floor(
+        Date.now() / 1000,
+      );
+
     if (
       !payload.expiresAt ||
-      payload.expiresAt <
-        Math.floor(Date.now() / 1000)
+      payload.expiresAt < now
     ) {
       return NextResponse.json(
         {
@@ -267,19 +428,33 @@ export async function POST(
       );
     }
 
-    const normalizedIdentifier =
-      payload.identifier ?? "";
+    const tokenIdentifier =
+      payload.identifier?.trim() ?? "";
+
+    if (!tokenIdentifier) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Password reset identity is missing.",
+        },
+        { status: 401 },
+      );
+    }
 
     const submittedNormalized =
-      normalizedIdentifier.includes(
-        "@",
-      )
-        ? normalizeEmail(identifier)
-        : normalizePhone(identifier);
+      normalizeIdentifier(
+        identifier,
+      );
+
+    const tokenNormalized =
+      normalizeIdentifier(
+        tokenIdentifier,
+      );
 
     if (
       submittedNormalized !==
-      normalizedIdentifier
+      tokenNormalized
     ) {
       return NextResponse.json(
         {
@@ -291,25 +466,96 @@ export async function POST(
       );
     }
 
-    /*
-      IMPORTANT:
-      The current HCS project stores admin settings
-      in browser localStorage.
+    const admin =
+      await findAdminByIdentifier(
+        tokenIdentifier,
+      );
 
-      Therefore this API route validates the reset
-      request but cannot directly update that
-      browser-local password.
+    if (!admin) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Admin account was not found.",
+        },
+        { status: 404 },
+      );
+    }
 
-      app/page.tsx must call updateAdminPassword()
-      after this API responds with success.
-    */
+    if (admin.active === false) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Admin account is inactive.",
+        },
+        { status: 403 },
+      );
+    }
 
-    return NextResponse.json({
-      success: true,
-      message:
-        "Password reset verified. The new Admin password can now be saved.",
-      passwordUpdateRequiredOnClient: true,
-    });
+    const passwordHash =
+      await hashPassword(
+        newPassword,
+      );
+
+    const client =
+      await getMongoClient();
+
+    const db = client.db(
+      getDatabaseName(),
+    );
+
+    const collection =
+      db.collection(
+        getAdminCollectionName(),
+      );
+
+    const updatedAt =
+      new Date();
+
+    const result =
+      await collection.updateOne(
+        {
+          _id: admin._id,
+        },
+        {
+          $set: {
+            passwordHash,
+            passwordUpdatedAt:
+              updatedAt,
+            updatedAt,
+          },
+          $unset: {
+            password: "",
+            loginPassword: "",
+          },
+        },
+      );
+
+    if (
+      !result.acknowledged ||
+      result.modifiedCount !== 1
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Password could not be updated.",
+        },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: true,
+        message:
+          "Admin password has been reset successfully.",
+        passwordUpdateRequiredOnClient:
+          false,
+      },
+      { status: 200 },
+    );
   } catch (error) {
     console.error(
       "HCS reset password error:",
