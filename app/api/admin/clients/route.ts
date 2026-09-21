@@ -1,59 +1,35 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  createHmac,
+  randomBytes,
+  scrypt as scryptCallback,
+  timingSafeEqual,
+} from "node:crypto";
+import { promisify } from "node:util";
+import {
   MongoClient,
   ObjectId,
-  type Collection,
   type Document,
 } from "mongodb";
-import { createHmac, randomBytes, randomInt, scrypt } from "crypto";
 
 export const runtime = "nodejs";
 
-type ClientDocument = {
-  _id?: ObjectId;
+const scrypt = promisify(scryptCallback);
 
-  clientId: string;
-  username: string;
-  email: string;
+const SESSION_COOKIE_NAME = "hcs-session";
 
-  name: string;
-  fullName?: string;
-  companyName?: string;
-  phone?: string;
-  website?: string;
-
-  plan?: string;
-  assignedManager?: string;
-
-  status: string;
-  active: boolean;
-
-  role: "client";
-
-  passwordHash: string;
-
-  clientPortalEnabled: boolean;
-
-  permissions?: string[];
-  assignedWebsiteIds?: string[];
-  tags?: string[];
-  notes?: string;
-  services?: string[];
-
-  createdAt: Date;
-  updatedAt: Date;
-  lastLogin?: Date | null;
+type SessionPayload = {
+  sub?: string;
+  role?: "admin" | "client";
+  iat?: number;
+  exp?: number;
+  nonce?: string;
 };
 
-declare global {
-  // eslint-disable-next-line no-var
-  var __hcs: MongoClient | undefined;
-  // eslint-disable-next-line no-var
-  var __hcsMongoPromise: Promise<MongoClient> | undefined;
-}
+let mongoClientPromise: Promise<MongoClient> | null = null;
 
 function getMongoUri() {
-  const uri = process.env.MONGODB_URI;
+  const uri = process.env.MONGODB_URI?.trim();
 
   if (!uri) {
     throw new Error("MONGODB_URI is not configured.");
@@ -62,710 +38,928 @@ function getMongoUri() {
   return uri;
 }
 
-async function getMongoClient() {
+function getDatabaseName() {
+  const configured =
+    process.env.MONGODB_DB?.trim() ||
+    process.env.MONGODB_DATABASE?.trim();
+
+  if (configured) {
+    return configured;
+  }
+
   const uri = getMongoUri();
 
-  if (!global.__hcsMongoClient) {
-    if (!global.__hcsMongoPromise) {
-      const client = new MongoClient(uri, {
-        maxPoolSize: 10,
-      });
+  const withoutProtocol = uri.replace(
+    /^mongodb(?:\+srv)?:\/\//,
+    "",
+  );
 
-      global.__hcsMongoPromise = client.connect();
+  const slashIndex = withoutProtocol.indexOf("/");
+
+  if (slashIndex !== -1) {
+    const databaseName = withoutProtocol
+      .slice(slashIndex + 1)
+      .split("?")[0]
+      .trim();
+
+    if (databaseName) {
+      return decodeURIComponent(databaseName);
     }
-
-    global.__hcsMongoClient = await global.__hcsMongoPromise;
   }
 
-  return global.__hcsMongoClient;
+  return "hcs";
 }
 
-function getDatabaseName() {
+function getAdminCollectionName() {
   return (
-    process.env.MONGODB_DB ||
-    process.env.MONGODB_DATABASE ||
-    "hcs"
+    process.env.MONGODB_ADMIN_COLLECTION?.trim() ||
+    "admins"
   );
 }
 
-function getClientsCollection(
-  client: MongoClient
-): Collection<ClientDocument> {
-  const db = client.db(getDatabaseName());
-
-  return db.collection<ClientDocument>(
-    process.env.MONGODB_CLIENT_COLLECTION || "clients"
+function getClientCollectionName() {
+  return (
+    process.env.MONGODB_CLIENT_COLLECTION?.trim() ||
+    "clients"
   );
 }
 
-/* -------------------------------------------------------
-   SESSION / ADMIN AUTH
-------------------------------------------------------- */
+async function getMongoClient() {
+  if (!mongoClientPromise) {
+    const client = new MongoClient(getMongoUri(), {
+      maxPoolSize: 10,
+      minPoolSize: 0,
+      serverSelectionTimeoutMS: 10_000,
+    });
 
-function base64UrlToBuffer(value: string) {
-  return Buffer.from(
-    value.replace(/-/g, "+").replace(/_/g, "/"),
-    "base64"
-  );
+    mongoClientPromise = client.connect();
+  }
+
+  return mongoClientPromise;
 }
 
-function verifyAdminSession(request: NextRequest) {
-  const secret = process.env.HCS_SESSION_SECRET;
+function getSessionSecret() {
+  const secret =
+    process.env.HCS_SESSION_SECRET?.trim();
 
   if (!secret) {
-    throw new Error("HCS_SESSION_SECRET is not configured.");
+    throw new Error(
+      "HCS_SESSION_SECRET is not configured.",
+    );
   }
 
-  const cookie = request.cookies.get("hcs-session")?.value;
-
-  if (!cookie) {
-    return null;
+  if (secret.length < 32) {
+    throw new Error(
+      "HCS_SESSION_SECRET must contain at least 32 characters.",
+    );
   }
 
-  const parts = cookie.split(".");
+  return secret;
+}
+
+function safeEqual(
+  a: Buffer,
+  b: Buffer,
+) {
+  if (a.length !== b.length) {
+    return false;
+  }
+
+  return timingSafeEqual(a, b);
+}
+
+function decodeSession(
+  token: string,
+): SessionPayload {
+  const parts = token.split(".");
 
   if (parts.length !== 2) {
-    return null;
+    throw new Error("Invalid session token.");
   }
 
-  const [encodedPayload, encodedSignature] = parts;
+  const [encoded, signature] = parts;
+
+  const expectedSignature = createHmac(
+    "sha256",
+    getSessionSecret(),
+  )
+    .update(encoded)
+    .digest("base64url");
+
+  if (
+    !safeEqual(
+      Buffer.from(signature, "utf8"),
+      Buffer.from(expectedSignature, "utf8"),
+    )
+  ) {
+    throw new Error("Invalid session signature.");
+  }
+
+  const payload = JSON.parse(
+    Buffer.from(
+      encoded,
+      "base64url",
+    ).toString("utf8"),
+  );
+
+  if (
+    !payload ||
+    typeof payload !== "object"
+  ) {
+    throw new Error("Invalid session payload.");
+  }
+
+  return payload as SessionPayload;
+}
+
+async function requireAdmin(
+  request: NextRequest,
+) {
+  const token =
+    request.cookies.get(
+      SESSION_COOKIE_NAME,
+    )?.value;
+
+  if (!token) {
+    return false;
+  }
 
   try {
-    const expectedSignature = createHmac(
-      "sha256",
-      secret
-    )
-      .update(encodedPayload)
-      .digest();
-
-    const receivedSignature =
-      base64UrlToBuffer(encodedSignature);
+    const session =
+      decodeSession(token);
 
     if (
-      expectedSignature.length !== receivedSignature.length ||
-      !expectedSignature.equals(receivedSignature)
+      session.role !== "admin" ||
+      !session.sub ||
+      !session.exp ||
+      session.exp <=
+        Math.floor(Date.now() / 1000)
     ) {
-      return null;
+      return false;
     }
 
-    const payload = JSON.parse(
-      base64UrlToBuffer(encodedPayload).toString("utf8")
-    );
-
-    if (!payload?.sub || !payload?.role) {
-      return null;
-    }
-
-    if (
-      typeof payload.exp !== "number" ||
-      payload.exp <= Math.floor(Date.now() / 1000)
-    ) {
-      return null;
-    }
-
-    const role = String(payload.role).toLowerCase();
-
-    if (
-      role !== "admin" &&
-      role !== "administrator"
-    ) {
-      return null;
-    }
-
-    return payload;
+    return true;
   } catch {
-    return null;
+    return false;
   }
 }
 
-/* -------------------------------------------------------
-   PASSWORD HASH
-------------------------------------------------------- */
-
-function hashPassword(password: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const salt = randomBytes(16).toString("hex");
-
-    scrypt(password, salt, 64, (error, derivedKey) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-
-      resolve(
-        `scrypt:${salt}:${derivedKey.toString("hex")}`
-      );
-    });
-  });
-}
-
-/* -------------------------------------------------------
-   VALIDATION
-------------------------------------------------------- */
-
-function validatePassword(password: string) {
-  if (!password || password.length < 8) {
-    return "Password must be at least 8 characters.";
-  }
-
-  if (password.length > 128) {
-    return "Password cannot exceed 128 characters.";
-  }
-
-  if (!/[A-Z]/.test(password)) {
-    return "Password must contain at least one uppercase letter.";
-  }
-
-  if (!/[0-9]/.test(password)) {
-    return "Password must contain at least one number.";
-  }
-
-  if (!/[^A-Za-z0-9]/.test(password)) {
-    return "Password must contain at least one special character.";
-  }
-
-  return null;
-}
-
-function cleanString(value: unknown) {
-  if (typeof value !== "string") {
-    return "";
-  }
-
-  return value.trim();
-}
-
-function normalizeEmail(value: unknown) {
-  return cleanString(value).toLowerCase();
-}
-
-function normalizeUsername(value: unknown) {
-  return cleanString(value).toLowerCase();
-}
-
-/* -------------------------------------------------------
-   SERVER PASSWORD GENERATOR
-------------------------------------------------------- */
-
-function generateClientPassword() {
-  const chars =
-    "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";
-
-  let result = "";
-
-  for (let i = 0; i < 14; i++) {
-    result += chars[randomInt(0, chars.length)];
-  }
-
-  return result;
-}
-
-/* -------------------------------------------------------
-   CLIENT ID
-------------------------------------------------------- */
-
-async function generateClientId(
-  collection: Collection<ClientDocument>
+async function hashPassword(
+  password: string,
 ) {
-  for (let attempt = 0; attempt < 20; attempt++) {
-    const number = randomInt(100000, 1000000);
-
-    const clientId = `HCS-CL-${number}`;
-
-    const exists = await collection.findOne(
-      { clientId },
-      { projection: { _id: 1 } }
+  const salt =
+    randomBytes(16).toString(
+      "base64url",
     );
 
-    if (!exists) {
-      return clientId;
-    }
-  }
+  const derivedKey =
+    (await scrypt(
+      password,
+      salt,
+      64,
+    )) as Buffer;
 
-  throw new Error(
-    "Unable to generate a unique client ID."
-  );
+  return `scrypt:${salt}:${derivedKey.toString(
+    "hex",
+  )}`;
 }
 
-/* -------------------------------------------------------
-   SAFE CLIENT RESPONSE
-------------------------------------------------------- */
-
-function safeClient(client: ClientDocument) {
+function cleanClient(
+  client: Document,
+) {
   return {
-    id: client._id
-      ? client._id.toString()
-      : client.clientId,
-
-    clientId: client.clientId,
-    username: client.username,
-    email: client.email,
-
-    name: client.name,
-    fullName: client.fullName || client.name,
-
-    companyName: client.companyName || "",
-    phone: client.phone || "",
-    website: client.website || "",
-
-    plan: client.plan || "",
-    assignedManager: client.assignedManager || "",
-
-    status: client.status,
-    active: client.active,
-
-    role: client.role,
-
+    id: String(client._id),
+    clientId: String(
+      client.clientId ?? "",
+    ),
+    username: String(
+      client.username ?? "",
+    ),
+    email: String(
+      client.email ?? "",
+    ),
+    name: String(
+      client.name ??
+        client.companyName ??
+        "Client",
+    ),
+    fullName: String(
+      client.fullName ??
+        client.name ??
+        client.companyName ??
+        "Client",
+    ),
+    companyName: String(
+      client.companyName ?? "",
+    ),
+    phone:
+      client.phone
+        ? String(client.phone)
+        : undefined,
+    website:
+      client.website
+        ? String(client.website)
+        : undefined,
+    plan:
+      client.plan
+        ? String(client.plan)
+        : undefined,
+    assignedManager:
+      client.assignedManager
+        ? String(client.assignedManager)
+        : undefined,
+    status: String(
+      client.status ?? "Active",
+    ),
+    active:
+      client.active !== false,
+    role: "client",
     clientPortalEnabled:
-      client.clientPortalEnabled,
-
+      client.clientPortalEnabled !== false,
     permissions:
-      Array.isArray(client.permissions)
-        ? client.permissions
-        : [],
-
+      client.permissions ?? {},
     assignedWebsiteIds:
-      Array.isArray(client.assignedWebsiteIds)
+      Array.isArray(
+        client.assignedWebsiteIds,
+      )
         ? client.assignedWebsiteIds
         : [],
-
     tags:
       Array.isArray(client.tags)
         ? client.tags
         : [],
-
-    notes: client.notes || "",
-
+    notes:
+      client.notes
+        ? String(client.notes)
+        : undefined,
     services:
       Array.isArray(client.services)
         ? client.services
         : [],
-
-    createdAt: client.createdAt,
-    updatedAt: client.updatedAt,
-
-    lastLogin: client.lastLogin || null,
+    assignedServices:
+      Array.isArray(
+        client.assignedServices,
+      )
+        ? client.assignedServices
+        : [],
+    selectedServices:
+      Array.isArray(
+        client.selectedServices,
+      )
+        ? client.selectedServices
+        : [],
+    portalData:
+      client.portalData ?? undefined,
+    createdAt:
+      client.createdAt instanceof Date
+        ? client.createdAt.toISOString()
+        : client.createdAt,
+    updatedAt:
+      client.updatedAt instanceof Date
+        ? client.updatedAt.toISOString()
+        : client.updatedAt,
+    lastLogin:
+      client.lastLogin instanceof Date
+        ? client.lastLogin.toISOString()
+        : client.lastLogin ?? null,
   };
 }
 
-/* -------------------------------------------------------
-   GET — LOAD ALL CLIENTS
-------------------------------------------------------- */
+async function getClientsCollection() {
+  const client =
+    await getMongoClient();
 
-export async function GET(request: NextRequest) {
-  try {
-    const admin = verifyAdminSession(request);
+  const db =
+    client.db(getDatabaseName());
 
-    if (!admin) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: "Unauthorized.",
-        },
-        { status: 401 }
-      );
-    }
-
-    const mongoClient = await getMongoClient();
-    const collection = getClientsCollection(
-      mongoClient
-    );
-
-    const clients = await collection
-      .find({})
-      .sort({ createdAt: -1 })
-      .toArray();
-
-    return NextResponse.json(
-      {
-        success: true,
-        clients: clients.map(safeClient),
-      },
-      {
-        status: 200,
-        headers: {
-          "Cache-Control": "no-store",
-        },
-      }
-    );
-  } catch (error) {
-    console.error(
-      "GET /api/admin/clients error:",
-      error
-    );
-
-    return NextResponse.json(
-      {
-        success: false,
-        message: "Unable to load clients.",
-      },
-      { status: 500 }
-    );
-  }
+  return db.collection(
+    getClientCollectionName(),
+  );
 }
 
-/* -------------------------------------------------------
-   POST — CREATE CLIENT
-------------------------------------------------------- */
+function normalizeId(
+  value: unknown,
+) {
+  return String(
+    value ?? "",
+  ).trim();
+}
 
-export async function POST(request: NextRequest) {
+/* =========================================================
+   GET CLIENTS
+========================================================= */
+
+export async function GET(
+  request: NextRequest,
+) {
   try {
-    const admin = verifyAdminSession(request);
-
-    if (!admin) {
+    if (!(await requireAdmin(request))) {
       return NextResponse.json(
         {
           success: false,
-          message: "Unauthorized.",
+          message: "Admin authentication required.",
         },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
-    let body: Record<string, unknown>;
+    const collection =
+      await getClientsCollection();
 
-    try {
-      body = await request.json();
-    } catch {
-      return NextResponse.json(
-        {
-          success: false,
-          message: "Invalid JSON body.",
-        },
-        { status: 400 }
-      );
-    }
+    const clients =
+      await collection
+        .find({})
+        .sort({
+          createdAt: -1,
+        })
+        .toArray();
 
-    const mongoClient = await getMongoClient();
-
-    const collection = getClientsCollection(
-      mongoClient
-    );
-
-    /* ---------------------------------------------
-       BASIC FIELDS
-    --------------------------------------------- */
-
-    const name =
-      cleanString(body.name) ||
-      cleanString(body.fullName);
-
-    const username = normalizeUsername(
-      body.username
-    );
-
-    const email = normalizeEmail(body.email);
-
-    const companyName = cleanString(
-      body.companyName
-    );
-
-    if (!name) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: "Client name is required.",
-        },
-        { status: 400 }
-      );
-    }
-
-    if (!username) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: "Username is required.",
-        },
-        { status: 400 }
-      );
-    }
-
-    if (!/^[a-z0-9._-]{3,40}$/.test(username)) {
-      return NextResponse.json(
-        {
-          success: false,
-          message:
-            "Username can contain only lowercase letters, numbers, dots, hyphens and underscores.",
-        },
-        { status: 400 }
-      );
-    }
-
-    if (!email) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: "Email is required.",
-        },
-        { status: 400 }
-      );
-    }
-
-    if (
-      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
-        email
-      )
-    ) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: "Enter a valid email address.",
-        },
-        { status: 400 }
-      );
-    }
-
-    /* ---------------------------------------------
-       DUPLICATE CHECK
-    --------------------------------------------- */
-
-    const existing = await collection.findOne({
-      $or: [
-        { username },
-        { email },
-      ],
+    return NextResponse.json({
+      success: true,
+      clients:
+        clients.map(cleanClient),
     });
-
-    if (existing) {
-      if (
-        existing.username.toLowerCase() ===
-        username
-      ) {
-        return NextResponse.json(
-          {
-            success: false,
-            message:
-              "This username is already in use.",
-          },
-          { status: 409 }
-        );
-      }
-
-      return NextResponse.json(
-        {
-          success: false,
-          message:
-            "This email is already registered.",
-        },
-        { status: 409 }
-      );
-    }
-
-    /* ---------------------------------------------
-       PASSWORD
-    --------------------------------------------- */
-
-    let password = cleanString(body.password);
-
-    if (!password) {
-      password = generateClientPassword();
-    }
-
-    const passwordError =
-      validatePassword(password);
-
-    if (passwordError) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: passwordError,
-        },
-        { status: 400 }
-      );
-    }
-
-    const passwordHash =
-      await hashPassword(password);
-
-    /* ---------------------------------------------
-       CLIENT ID
-    --------------------------------------------- */
-
-    const clientId =
-      await generateClientId(collection);
-
-    /* ---------------------------------------------
-       STATUS
-    --------------------------------------------- */
-
-    const requestedStatus =
-      cleanString(body.status) || "Active";
-
-    const status =
-      requestedStatus || "Active";
-
-    const clientPortalEnabled =
-      body.clientPortalEnabled !== false;
-
-    const active =
-      body.active !== false &&
-      clientPortalEnabled &&
-      status.toLowerCase() === "active";
-
-    /* ---------------------------------------------
-       ARRAYS
-    --------------------------------------------- */
-
-    const permissions = Array.isArray(
-      body.permissions
-    )
-      ? body.permissions
-          .filter(
-            (item): item is string =>
-              typeof item === "string"
-          )
-          .map((item) => item.trim())
-          .filter(Boolean)
-      : [];
-
-    const assignedWebsiteIds =
-      Array.isArray(body.assignedWebsiteIds)
-        ? body.assignedWebsiteIds
-            .filter(
-              (item): item is string =>
-                typeof item === "string"
-            )
-            .map((item) => item.trim())
-            .filter(Boolean)
-        : [];
-
-    const tags = Array.isArray(body.tags)
-      ? body.tags
-          .filter(
-            (item): item is string =>
-              typeof item === "string"
-          )
-          .map((item) => item.trim())
-          .filter(Boolean)
-      : [];
-
-    const services = Array.isArray(
-      body.services
-    )
-      ? body.services
-          .filter(
-            (item): item is string =>
-              typeof item === "string"
-          )
-          .map((item) => item.trim())
-          .filter(Boolean)
-      : [];
-
-    /* ---------------------------------------------
-       DOCUMENT
-    --------------------------------------------- */
-
-    const now = new Date();
-
-    const clientDocument: ClientDocument = {
-      clientId,
-
-      username,
-      email,
-
-      name,
-      fullName: name,
-
-      companyName,
-
-      phone: cleanString(body.phone),
-      website: cleanString(body.website),
-
-      plan: cleanString(body.plan),
-      assignedManager: cleanString(
-        body.assignedManager
-      ),
-
-      status,
-      active,
-
-      role: "client",
-
-      passwordHash,
-
-      clientPortalEnabled,
-
-      permissions,
-      assignedWebsiteIds,
-      tags,
-
-      notes: cleanString(body.notes),
-
-      services,
-
-      createdAt: now,
-      updatedAt: now,
-
-      lastLogin: null,
-    };
-
-    /* ---------------------------------------------
-       INSERT
-    --------------------------------------------- */
-
-    const result =
-      await collection.insertOne(
-        clientDocument
-      );
-
-    const createdClient =
-      await collection.findOne({
-        _id: result.insertedId,
-      });
-
-    if (!createdClient) {
-      return NextResponse.json(
-        {
-          success: false,
-          message:
-            "Client was created but could not be loaded.",
-        },
-        { status: 500 }
-      );
-    }
-
-    /* ---------------------------------------------
-       RETURN PLAINTEXT PASSWORD ONLY ONCE
-    --------------------------------------------- */
-
-    const credentials = {
-      clientId: createdClient.clientId,
-      username: createdClient.username,
-      email: createdClient.email,
-      password,
-      name: createdClient.name,
-      companyName:
-        createdClient.companyName || "",
-      status: createdClient.status,
-    };
-
-    return NextResponse.json(
-      {
-        success: true,
-        message: "Client created successfully.",
-        client: safeClient(createdClient),
-        credentials,
-      },
-      {
-        status: 201,
-        headers: {
-          "Cache-Control": "no-store",
-        },
-      }
-    );
   } catch (error) {
     console.error(
-      "POST /api/admin/clients error:",
-      error
+      "HCS get clients error:",
+      error,
     );
 
     return NextResponse.json(
       {
         success: false,
         message:
-          "Unable to create client right now.",
+          "Unable to load client accounts.",
       },
-      { status: 500 }
+      { status: 500 },
+    );
+  }
+}
+
+/* =========================================================
+   CREATE / UPDATE / RESET / IMPORT
+========================================================= */
+
+export async function POST(
+  request: NextRequest,
+) {
+  try {
+    if (!(await requireAdmin(request))) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Admin authentication required.",
+        },
+        { status: 401 },
+      );
+    }
+
+    const body =
+      (await request.json()) as {
+        action?: string;
+        client?: Record<string, unknown>;
+        clients?: Record<string, unknown>[];
+        id?: string;
+        password?: string;
+      };
+
+    const collection =
+      await getClientsCollection();
+
+    /* -----------------------------------------------------
+       RESET PASSWORD
+    ----------------------------------------------------- */
+
+    if (
+      body.action ===
+      "resetPassword"
+    ) {
+      const id =
+        normalizeId(body.id);
+
+      const password =
+        String(
+          body.password ?? "",
+        );
+
+      if (!id || !password) {
+        return NextResponse.json(
+          {
+            success: false,
+            message:
+              "Client ID and password are required.",
+          },
+          { status: 400 },
+        );
+      }
+
+      const passwordHash =
+        await hashPassword(
+          password,
+        );
+
+      const filter =
+        ObjectId.isValid(id)
+          ? {
+              _id: new ObjectId(id),
+            }
+          : {
+              clientId: id,
+            };
+
+      const result =
+        await collection.updateOne(
+          filter,
+          {
+            $set: {
+              passwordHash,
+              updatedAt: new Date(),
+            },
+          },
+        );
+
+      if (!result.matchedCount) {
+        return NextResponse.json(
+          {
+            success: false,
+            message:
+              "Client account not found.",
+          },
+          { status: 404 },
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        generatedPassword:
+          password,
+      });
+    }
+
+    /* -----------------------------------------------------
+       IMPORT OLD LOCAL CLIENTS
+    ----------------------------------------------------- */
+
+    if (
+      body.action ===
+      "import"
+    ) {
+      const oldClients =
+        Array.isArray(body.clients)
+          ? body.clients
+          : [];
+
+      let imported = 0;
+
+      for (
+        const client of oldClients
+      ) {
+        const password =
+          String(
+            client.password ??
+              client.loginPassword ??
+              "",
+          );
+
+        if (!password) {
+          continue;
+        }
+
+        const passwordHash =
+          await hashPassword(
+            password,
+          );
+
+        const clientId =
+          String(
+            client.clientId ?? "",
+          ).trim();
+
+        if (!clientId) {
+          continue;
+        }
+
+        const existing =
+          await collection.findOne({
+            clientId,
+          });
+
+        if (existing) {
+          await collection.updateOne(
+            {
+              _id: existing._id,
+            },
+            {
+              $set: {
+                ...client,
+                passwordHash,
+                role: "client",
+                updatedAt:
+                  new Date(),
+              },
+              $unset: {
+                password: "",
+                loginPassword: "",
+              },
+            },
+          );
+        } else {
+          const {
+            password: _password,
+            loginPassword:
+              _loginPassword,
+            id: _id,
+            ...safeClient
+          } = client;
+
+          await collection.insertOne({
+            ...safeClient,
+            clientId,
+            role: "client",
+            passwordHash,
+            createdAt:
+              client.createdAt
+                ? new Date(
+                    String(
+                      client.createdAt,
+                    ),
+                  )
+                : new Date(),
+            updatedAt:
+              new Date(),
+          });
+        }
+
+        imported += 1;
+      }
+
+      return NextResponse.json({
+        success: true,
+        imported,
+      });
+    }
+
+    /* -----------------------------------------------------
+       CREATE / UPDATE
+    ----------------------------------------------------- */
+
+    const client =
+      body.client;
+
+    if (
+      !client ||
+      typeof client !== "object"
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Client data is required.",
+        },
+        { status: 400 },
+      );
+    }
+
+    const id =
+      normalizeId(client.id);
+
+    const clientId =
+      normalizeId(
+        client.clientId,
+      );
+
+    const username =
+      normalizeId(
+        client.username,
+      );
+
+    const email =
+      normalizeId(
+        client.email,
+      ).toLowerCase();
+
+    if (
+      !clientId ||
+      !username ||
+      !email
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Client ID, username and email are required.",
+        },
+        { status: 400 },
+      );
+    }
+
+    const existingByUsername =
+      await collection.findOne({
+        username: {
+          $regex:
+            `^${escapeRegex(username)}$`,
+          $options: "i",
+        },
+      });
+
+    if (
+      existingByUsername &&
+      String(existingByUsername._id) !== id
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Username already exists.",
+        },
+        { status: 409 },
+      );
+    }
+
+    const existingByEmail =
+      await collection.findOne({
+        email: {
+          $regex:
+            `^${escapeRegex(email)}$`,
+          $options: "i",
+        },
+      });
+
+    if (
+      existingByEmail &&
+      String(existingByEmail._id) !== id
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Email already exists.",
+        },
+        { status: 409 },
+      );
+    }
+
+    let passwordHash:
+      | string
+      | undefined;
+
+    const password =
+      String(
+        client.password ?? "",
+      );
+
+    if (password) {
+      if (
+        password.length < 8 ||
+        password.length > 128
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            message:
+              "Password must contain 8 to 128 characters.",
+          },
+          { status: 400 },
+        );
+      }
+
+      passwordHash =
+        await hashPassword(
+          password,
+        );
+    }
+
+    const {
+      password:
+        _password,
+      loginPassword:
+        _loginPassword,
+      id:
+        _clientIdForMongo,
+      ...rest
+    } = client;
+
+    const document: Document = {
+      ...rest,
+      clientId,
+      username,
+      email,
+      role: "client",
+      active:
+        client.active !== false,
+      clientPortalEnabled:
+        client.clientPortalEnabled !==
+        false,
+      status:
+        client.status ??
+        "Active",
+      updatedAt:
+        new Date(),
+    };
+
+    if (passwordHash) {
+      document.passwordHash =
+        passwordHash;
+    }
+
+    /* UPDATE */
+    if (id) {
+      const filter =
+        ObjectId.isValid(id)
+          ? {
+              _id: new ObjectId(id),
+            }
+          : {
+              clientId: id,
+            };
+
+      const current =
+        await collection.findOne(
+          filter,
+        );
+
+      if (!current) {
+        return NextResponse.json(
+          {
+            success: false,
+            message:
+              "Client account not found.",
+          },
+          { status: 404 },
+        );
+      }
+
+      await collection.updateOne(
+        filter,
+        {
+          $set: document,
+          ...(!passwordHash
+            ? {}
+            : {
+                $setOnInsert: {},
+              }),
+        },
+      );
+
+      const updated =
+        await collection.findOne(
+          filter,
+        );
+
+      return NextResponse.json({
+        success: true,
+        client:
+          updated
+            ? cleanClient(updated)
+            : null,
+        password:
+          password || undefined,
+      });
+    }
+
+    /* CREATE */
+    if (!passwordHash) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Password is required when creating a client.",
+        },
+        { status: 400 },
+      );
+    }
+
+    document.createdAt =
+      new Date();
+
+    const inserted =
+      await collection.insertOne(
+        document,
+      );
+
+    const created =
+      await collection.findOne({
+        _id: inserted.insertedId,
+      });
+
+    return NextResponse.json(
+      {
+        success: true,
+        client:
+          created
+            ? cleanClient(created)
+            : null,
+        password,
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    console.error(
+      "HCS admin client API error:",
+      error,
+    );
+
+    return NextResponse.json(
+      {
+        success: false,
+        message:
+          "Unable to save client account.",
+      },
+      { status: 500 },
+    );
+  }
+}
+
+function escapeRegex(
+  value: string,
+) {
+  return value.replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&",
+  );
+}
+
+/* =========================================================
+   DELETE
+========================================================= */
+
+export async function DELETE(
+  request: NextRequest,
+) {
+  try {
+    if (!(await requireAdmin(request))) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Admin authentication required.",
+        },
+        { status: 401 },
+      );
+    }
+
+    const body =
+      (await request.json()) as {
+        id?: string;
+      };
+
+    const id =
+      normalizeId(body.id);
+
+    if (!id) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Client ID is required.",
+        },
+        { status: 400 },
+      );
+    }
+
+    const collection =
+      await getClientsCollection();
+
+    const filter =
+      ObjectId.isValid(id)
+        ? {
+            _id: new ObjectId(id),
+          }
+        : {
+            clientId: id,
+          };
+
+    const result =
+      await collection.deleteOne(
+        filter,
+      );
+
+    if (!result.deletedCount) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Client account not found.",
+        },
+        { status: 404 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+    });
+  } catch (error) {
+    console.error(
+      "HCS delete client error:",
+      error,
+    );
+
+    return NextResponse.json(
+      {
+        success: false,
+        message:
+          "Unable to delete client account.",
+      },
+      { status: 500 },
     );
   }
 }

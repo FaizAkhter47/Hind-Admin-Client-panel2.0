@@ -1,6 +1,7 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import type { FormEvent } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type LoginResponse = {
@@ -19,6 +20,36 @@ type LoginResponse = {
   };
 };
 
+type LocalClient = {
+  id?: string;
+  clientId?: string;
+  username?: string;
+  email?: string;
+  password?: string;
+  loginPassword?: string;
+  name?: string;
+  companyName?: string;
+  phone?: string;
+  role?: string;
+  status?: string;
+  active?: boolean;
+  clientPortalEnabled?: boolean;
+};
+
+const ADMIN_SETTINGS_STORAGE_KEY = "hcs-admin-settings-v6";
+const CLIENT_SESSION_KEY = "hcs-auth-session";
+
+/*
+ * These are the current server-authenticated Admin identifiers.
+ * Client identifiers will NEVER be sent to /api/auth/login.
+ */
+const KNOWN_ADMIN_IDENTIFIERS = [
+  "hcs-admin-001",
+  "hcsadmin",
+  "admin@hindconsultancyservices.com",
+  "faizakhter47@gmail.com",
+];
+
 export default function LoginPage() {
   const router = useRouter();
 
@@ -30,28 +61,193 @@ export default function LoginPage() {
   const [checkingSession, setCheckingSession] = useState(true);
   const [error, setError] = useState("");
 
+  /*
+   * =====================================================
+   * FIND LOCAL CLIENT
+   * =====================================================
+   *
+   * Admin-created clients are currently stored in:
+   *
+   * hcs-admin-settings-v6
+   *
+   * This function reads the browser storage directly.
+   */
+  const findLocalClient = (
+    value: string,
+  ): LocalClient | null => {
+    if (typeof window === "undefined") {
+      return null;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(
+        ADMIN_SETTINGS_STORAGE_KEY,
+      );
+
+      if (!raw) {
+        return null;
+      }
+
+      const parsed = JSON.parse(raw);
+
+      const clients = Array.isArray(
+        parsed?.clients,
+      )
+        ? parsed.clients
+        : [];
+
+      const query = value
+        .trim()
+        .toLowerCase();
+
+      if (!query) {
+        return null;
+      }
+
+      const client =
+        clients.find((item: LocalClient) => {
+          const identifiers = [
+            item?.clientId,
+            item?.id,
+            item?.username,
+            item?.email,
+          ]
+            .map((itemValue) =>
+              String(itemValue ?? "")
+                .trim()
+                .toLowerCase(),
+            )
+            .filter(Boolean);
+
+          return identifiers.includes(query);
+        }) ?? null;
+
+      return client;
+    } catch (storageError) {
+      console.error(
+        "Unable to read local HCS client accounts:",
+        storageError,
+      );
+
+      return null;
+    }
+  };
+
+  /*
+   * =====================================================
+   * CREATE CLIENT SESSION
+   * =====================================================
+   */
+  const createClientSession = (
+    client: LocalClient,
+  ) => {
+    const clientId = String(
+      client.clientId ??
+        client.id ??
+        "",
+    ).trim();
+
+    const accountId = String(
+      client.id ??
+        client.clientId ??
+        "",
+    ).trim();
+
+    const username = String(
+      client.username ?? "",
+    ).trim();
+
+    const email = String(
+      client.email ?? "",
+    ).trim();
+
+    const name = String(
+      client.name ??
+        client.companyName ??
+        client.username ??
+        "Client",
+    ).trim();
+
+    const companyName = String(
+      client.companyName ?? "",
+    ).trim();
+
+    const session = {
+      authenticated: true,
+      role: "client",
+      id: clientId || accountId,
+      clientId,
+      accountId,
+      username,
+      email,
+      name,
+      companyName,
+      loggedInAt:
+        new Date().toISOString(),
+      sessionId:
+        `client-${Date.now()}-` +
+        Math.random()
+          .toString(36)
+          .slice(2, 10),
+    };
+
+    window.localStorage.setItem(
+      CLIENT_SESSION_KEY,
+      JSON.stringify(session),
+    );
+  };
+
+  /*
+   * =====================================================
+   * EXISTING SESSION CHECK
+   * =====================================================
+   */
   useEffect(() => {
     let mounted = true;
 
     const checkExistingSession = async () => {
+      /*
+       * -----------------------------------------------
+       * 1. CHECK SERVER ADMIN SESSION
+       * -----------------------------------------------
+       */
       try {
-        const response = await fetch("/api/auth/me", {
-          method: "GET",
-          credentials: "include",
-          cache: "no-store",
-          headers: {
-            Accept: "application/json",
+        const response = await fetch(
+          "/api/auth/me",
+          {
+            method: "GET",
+            credentials: "include",
+            cache: "no-store",
+            headers: {
+              Accept: "application/json",
+            },
           },
-        });
+        );
 
-        const data = await response.json().catch(() => null);
+        const data: LoginResponse =
+          await response
+            .json()
+            .catch(() => null);
 
-        if (!mounted) return;
+        if (!mounted) {
+          return;
+        }
 
-        if (response.ok && data?.success && data?.user) {
-          const role = String(data.user.role || "").toLowerCase();
+        if (
+          response.ok &&
+          data?.success === true &&
+          data?.user
+        ) {
+          const role = String(
+            data.user.role ?? "",
+          )
+            .trim()
+            .toLowerCase();
 
-          if (role === "admin" || role === "administrator") {
+          if (
+            role === "admin" ||
+            role === "administrator"
+          ) {
             router.replace("/admin");
             return;
           }
@@ -61,8 +257,99 @@ export default function LoginPage() {
             return;
           }
         }
-      } catch {
-        // No active session or backend unavailable.
+      } catch (serverError) {
+        console.error(
+          "Server session check failed:",
+          serverError,
+        );
+      }
+
+      /*
+       * -----------------------------------------------
+       * 2. CHECK LOCAL CLIENT SESSION
+       * -----------------------------------------------
+       */
+      try {
+        const sessionRaw =
+          window.localStorage.getItem(
+            CLIENT_SESSION_KEY,
+          );
+
+        if (!sessionRaw) {
+          return;
+        }
+
+        const session = JSON.parse(
+          sessionRaw,
+        );
+
+        const role = String(
+          session?.role ?? "",
+        )
+          .trim()
+          .toLowerCase();
+
+        if (
+          session?.authenticated !== true ||
+          role !== "client"
+        ) {
+          window.localStorage.removeItem(
+            CLIENT_SESSION_KEY,
+          );
+          return;
+        }
+
+        const client = findLocalClient(
+          String(
+            session?.clientId ??
+              session?.id ??
+              session?.username ??
+              session?.email ??
+              "",
+          ),
+        );
+
+        if (!client) {
+          window.localStorage.removeItem(
+            CLIENT_SESSION_KEY,
+          );
+          return;
+        }
+
+        const status = String(
+          client.status ?? "Active",
+        )
+          .trim()
+          .toLowerCase();
+
+        const accountActive =
+          client.active !== false;
+
+        const portalEnabled =
+          client.clientPortalEnabled !==
+          false;
+
+        if (
+          status === "active" &&
+          accountActive &&
+          portalEnabled
+        ) {
+          router.replace("/client");
+          return;
+        }
+
+        window.localStorage.removeItem(
+          CLIENT_SESSION_KEY,
+        );
+      } catch (clientSessionError) {
+        console.error(
+          "Local client session check failed:",
+          clientSessionError,
+        );
+
+        window.localStorage.removeItem(
+          CLIENT_SESSION_KEY,
+        );
       } finally {
         if (mounted) {
           setCheckingSession(false);
@@ -77,54 +364,199 @@ export default function LoginPage() {
     };
   }, [router]);
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+  /*
+   * =====================================================
+   * LOGIN SUBMIT
+   * =====================================================
+   */
+  const handleSubmit = async (
+    event: FormEvent<HTMLFormElement>,
+  ) => {
     event.preventDefault();
 
     setError("");
 
-    const cleanIdentifier = identifier.trim();
+    const cleanIdentifier =
+      identifier.trim();
+
+    const normalizedIdentifier =
+      cleanIdentifier.toLowerCase();
+
+    const cleanPassword = password;
 
     if (!cleanIdentifier) {
-      setError("Please enter your Admin ID, Client ID, username or email.");
+      setError(
+        "Please enter your Admin ID, Client ID, username or email.",
+      );
       return;
     }
 
-    if (!password) {
-      setError("Please enter your password.");
+    if (!cleanPassword) {
+      setError(
+        "Please enter your password.",
+      );
       return;
     }
 
     setLoading(true);
 
     try {
-      const response = await fetch("/api/auth/login", {
-        method: "POST",
-        credentials: "include",
-        cache: "no-store",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          identifier: cleanIdentifier,
-          password,
-        }),
-      });
+      /*
+       * =================================================
+       * 1. CLIENT LOGIN
+       * =================================================
+       *
+       * IMPORTANT:
+       * Client login does NOT call /api/auth/login.
+       */
+      const client =
+        findLocalClient(
+          cleanIdentifier,
+        );
 
-      const data: LoginResponse = await response.json().catch(() => ({
-        success: false,
-        message: "Invalid server response.",
-      }));
+      if (client) {
+        const savedPassword =
+          String(
+            client.password ??
+              client.loginPassword ??
+              "",
+          );
 
-      if (!response.ok || !data.success || !data.user) {
-        setError(data.message || "Invalid credentials.");
+        const status =
+          String(
+            client.status ??
+              "Active",
+          )
+            .trim()
+            .toLowerCase();
+
+        const accountActive =
+          client.active !== false;
+
+        const portalEnabled =
+          client.clientPortalEnabled !==
+          false;
+
+        /*
+         * Client account disabled
+         */
+        if (
+          status !== "active" ||
+          !accountActive ||
+          !portalEnabled
+        ) {
+          setError(
+            "Client account is inactive or portal access is disabled.",
+          );
+          setLoading(false);
+          return;
+        }
+
+        /*
+         * Client password
+         */
+        if (
+          !savedPassword ||
+          savedPassword !==
+            cleanPassword
+        ) {
+          setError(
+            "Invalid credentials.",
+          );
+          setLoading(false);
+          return;
+        }
+
+        /*
+         * Client login successful
+         */
+        createClientSession(
+          client,
+        );
+
+        router.replace("/client");
+        return;
+      }
+
+      /*
+       * =================================================
+       * 2. UNKNOWN NON-ADMIN IDENTIFIER
+       * =================================================
+       *
+       * Do NOT send random Client IDs/usernames to
+       * /api/auth/login.
+       */
+      const isKnownAdmin =
+        KNOWN_ADMIN_IDENTIFIERS.includes(
+          normalizedIdentifier,
+        );
+
+      if (!isKnownAdmin) {
+        setError(
+          "Invalid credentials.",
+        );
         setLoading(false);
         return;
       }
 
-      const role = String(data.user.role || "").toLowerCase();
+      /*
+       * =================================================
+       * 3. ADMIN LOGIN
+       * =================================================
+       */
+      const response = await fetch(
+        "/api/auth/login",
+        {
+          method: "POST",
+          credentials: "include",
+          cache: "no-store",
+          headers: {
+            "Content-Type":
+              "application/json",
+            Accept:
+              "application/json",
+          },
+          body: JSON.stringify({
+            identifier:
+              cleanIdentifier,
+            password:
+              cleanPassword,
+          }),
+        },
+      );
 
-      if (role === "admin" || role === "administrator") {
+      const data: LoginResponse =
+        await response
+          .json()
+          .catch(() => ({
+            success: false,
+            message:
+              "Invalid server response.",
+          }));
+
+      if (
+        !response.ok ||
+        data.success !== true ||
+        !data.user
+      ) {
+        setError(
+          data.message ||
+            "Invalid credentials.",
+        );
+        setLoading(false);
+        return;
+      }
+
+      const role = String(
+        data.user.role ?? "",
+      )
+        .trim()
+        .toLowerCase();
+
+      if (
+        role === "admin" ||
+        role === "administrator"
+      ) {
         router.replace("/admin");
         return;
       }
@@ -134,22 +566,38 @@ export default function LoginPage() {
         return;
       }
 
-      setError("Your account role is not supported.");
-      setLoading(false);
-    } catch {
       setError(
-        "Unable to sign in right now. Please check your connection and try again."
+        "Your account role is not supported.",
       );
+
+      setLoading(false);
+    } catch (loginError) {
+      console.error(
+        "Login error:",
+        loginError,
+      );
+
+      setError(
+        "Unable to sign in right now. Please check your connection and try again.",
+      );
+
       setLoading(false);
     }
   };
 
+  /*
+   * =====================================================
+   * CHECKING SESSION SCREEN
+   * =====================================================
+   */
   if (checkingSession) {
     return (
       <>
         <div className="loadingScreen">
           <div className="loader" />
-          <p>Checking session...</p>
+          <p>
+            Checking session...
+          </p>
         </div>
 
         <style jsx>{`
@@ -162,7 +610,10 @@ export default function LoginPage() {
             background: #000;
             color: #fff;
             font-family:
-              Inter, Arial, Helvetica, sans-serif;
+              Inter,
+              Arial,
+              Helvetica,
+              sans-serif;
           }
 
           .loader {
@@ -191,37 +642,66 @@ export default function LoginPage() {
     );
   }
 
+  /*
+   * =====================================================
+   * LOGIN UI
+   * =====================================================
+   */
   return (
     <>
       <main className="page">
         <section className="loginCard">
           <div className="brand">
-            <div className="logo">HCS</div>
+            <div className="logo">
+              HCS
+            </div>
 
             <div>
-              <h1>Hind Consultancy Services</h1>
-              <p>Client & Admin Portal</p>
+              <h1>
+                Hind Consultancy Services
+              </h1>
+
+              <p>
+                Client & Admin Portal
+              </p>
             </div>
           </div>
 
           <div className="heading">
-            <h2>Welcome back</h2>
-            <p>Sign in to continue to your portal.</p>
+            <h2>
+              Welcome back
+            </h2>
+
+            <p>
+              Sign in to continue to
+              your portal.
+            </p>
           </div>
 
-          <form onSubmit={handleSubmit} noValidate>
+          <form
+            onSubmit={handleSubmit}
+            noValidate
+          >
             <div className="field">
               <label htmlFor="identifier">
-                Admin ID / Client ID / Username / Email
+                Admin ID / Client ID /
+                Username / Email
               </label>
 
               <input
                 id="identifier"
                 type="text"
                 value={identifier}
-                onChange={(e) => {
-                  setIdentifier(e.target.value);
-                  if (error) setError("");
+                onChange={(
+                  event,
+                ) => {
+                  setIdentifier(
+                    event.target.value,
+                  );
+
+                  if (error) {
+                    setError("");
+                  }
                 }}
                 placeholder="Enter your ID or email"
                 autoComplete="username"
@@ -230,16 +710,29 @@ export default function LoginPage() {
             </div>
 
             <div className="field">
-              <label htmlFor="password">Password</label>
+              <label htmlFor="password">
+                Password
+              </label>
 
               <div className="passwordWrap">
                 <input
                   id="password"
-                  type={showPassword ? "text" : "password"}
+                  type={
+                    showPassword
+                      ? "text"
+                      : "password"
+                  }
                   value={password}
-                  onChange={(e) => {
-                    setPassword(e.target.value);
-                    if (error) setError("");
+                  onChange={(
+                    event,
+                  ) => {
+                    setPassword(
+                      event.target.value,
+                    );
+
+                    if (error) {
+                      setError("");
+                    }
                   }}
                   placeholder="Enter your password"
                   autoComplete="current-password"
@@ -249,16 +742,26 @@ export default function LoginPage() {
                 <button
                   type="button"
                   className="showButton"
-                  onClick={() => setShowPassword((value) => !value)}
+                  onClick={() =>
+                    setShowPassword(
+                      (value) =>
+                        !value,
+                    )
+                  }
                   disabled={loading}
                 >
-                  {showPassword ? "Hide" : "Show"}
+                  {showPassword
+                    ? "Hide"
+                    : "Show"}
                 </button>
               </div>
             </div>
 
             {error && (
-              <div className="errorBox" role="alert">
+              <div
+                className="errorBox"
+                role="alert"
+              >
                 {error}
               </div>
             )}
@@ -268,14 +771,24 @@ export default function LoginPage() {
               className="loginButton"
               disabled={loading}
             >
-              {loading ? "Signing in..." : "Sign In"}
+              {loading
+                ? "Signing in..."
+                : "Sign In"}
             </button>
           </form>
 
           <div className="footer">
-            <a href="/admin/forgot-password">Forgot password?</a>
-            <span>•</span>
-            <span>HCS Secure Portal</span>
+            <a href="/admin/forgot-password">
+              Forgot password?
+            </a>
+
+            <span>
+              •
+            </span>
+
+            <span>
+              HCS Secure Portal
+            </span>
           </div>
         </section>
       </main>
@@ -295,13 +808,21 @@ export default function LoginPage() {
           background:
             radial-gradient(
               circle at top left,
-              rgba(255, 255, 255, 0.08),
+              rgba(
+                255,
+                255,
+                255,
+                0.08
+              ),
               transparent 35%
             ),
             #050505;
           color: #fff;
           font-family:
-            Inter, Arial, Helvetica, sans-serif;
+            Inter,
+            Arial,
+            Helvetica,
+            sans-serif;
         }
 
         .loginCard {
@@ -311,7 +832,14 @@ export default function LoginPage() {
           border: 1px solid #242424;
           border-radius: 20px;
           background: #0b0b0b;
-          box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+          box-shadow:
+            0 24px 80px
+              rgba(
+                0,
+                0,
+                0,
+                0.45
+              );
         }
 
         .brand {
@@ -427,7 +955,8 @@ export default function LoginPage() {
           position: absolute;
           top: 50%;
           right: 12px;
-          transform: translateY(-50%);
+          transform:
+            translateY(-50%);
           padding: 5px;
           border: 0;
           background: transparent;
@@ -472,7 +1001,8 @@ export default function LoginPage() {
         }
 
         .loginButton:hover:not(:disabled) {
-          transform: translateY(-1px);
+          transform:
+            translateY(-1px);
         }
 
         .loginButton:disabled {
