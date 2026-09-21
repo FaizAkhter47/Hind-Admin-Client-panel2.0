@@ -24,6 +24,16 @@ export interface GlobalAdminAccount {
   fullName: string;
   username: string;
   email: string;
+
+  /*
+   * Optional admin password fields.
+   * Server-side authentication remains the primary admin auth system.
+   * These fields are kept here so Settings UI does not lose saved values.
+   */
+  password?: string;
+  loginPassword?: string;
+  passwordChangedAt?: string;
+
   phone: string;
   jobTitle: string;
   department: string;
@@ -63,10 +73,19 @@ export interface ClientAccount {
   name: string;
   companyName: string;
   email: string;
+
+  /*
+   * IMPORTANT:
+   * Password is part of the client account and must persist.
+   */
+  password: string;
+  loginPassword?: string;
+
   role: "client";
   status: "Active" | "Suspended" | "Disabled";
   active: boolean;
   createdAt: string;
+
   phone?: string;
   website?: string;
   plan?: string;
@@ -74,6 +93,7 @@ export interface ClientAccount {
   lastLogin?: string;
   updatedAt?: string;
   notes?: string;
+
   clientPortalEnabled?: boolean;
   permissions?: Record<string, boolean>;
   assignedWebsiteIds?: string[];
@@ -159,6 +179,7 @@ export const DEFAULT_GLOBAL_ADMIN_SETTINGS: GlobalAdminSettings = {
     fullName: "HCS Administrator",
     username: "hcsadmin",
     email: "admin@hindconsultancyservices.com",
+
     phone: "+91 00000 00000",
     jobTitle: "SEO & Operations Administrator",
     department: "SEO & Digital Operations",
@@ -189,6 +210,7 @@ function cleanOptionalString(
   value: unknown,
 ): string | undefined {
   const result = cleanString(value);
+
   return result || undefined;
 }
 
@@ -228,6 +250,20 @@ function normalizeAdminAccount(
       raw.email,
       defaults.email,
     ),
+
+    /*
+     * Preserve admin password fields when present.
+     */
+    password:
+      cleanOptionalString(raw.password) ??
+      cleanOptionalString(raw.loginPassword),
+
+    loginPassword:
+      cleanOptionalString(raw.loginPassword) ??
+      cleanOptionalString(raw.password),
+
+    passwordChangedAt:
+      cleanOptionalString(raw.passwordChangedAt),
 
     phone: cleanString(
       raw.phone,
@@ -277,6 +313,9 @@ function normalizeClientAccount(
     value as Partial<ClientAccount> &
       Record<string, unknown>;
 
+  /*
+   * Basic account identity.
+   */
   const clientId = cleanString(
     raw.clientId ?? raw.id,
   );
@@ -289,6 +328,19 @@ function normalizeClientAccount(
     raw.username,
   );
 
+  /*
+   * IMPORTANT FIX:
+   * Preserve both password and loginPassword.
+   */
+  const password = cleanString(
+    raw.password ?? raw.loginPassword,
+  );
+
+  /*
+   * Do NOT reject old accounts only because password
+   * is missing. Existing old accounts remain visible.
+   * Newly created/reset accounts will contain a password.
+   */
   if (!id || !clientId || !username) {
     return null;
   }
@@ -300,6 +352,9 @@ function normalizeClientAccount(
         ? "Disabled"
         : "Active";
 
+  /*
+   * Services can come from multiple older field names.
+   */
   const serviceSource =
     raw.services ??
     raw.assignedServices ??
@@ -310,6 +365,10 @@ function normalizeClientAccount(
     Array.isArray(serviceSource)
       ? serviceSource
           .map((value, index): ClientService | null => {
+            /*
+             * Old format:
+             * ["SEO", "Web Development"]
+             */
             if (typeof value === "string") {
               const name = value.trim();
 
@@ -322,6 +381,9 @@ function normalizeClientAccount(
                 : null;
             }
 
+            /*
+             * Invalid service value.
+             */
             if (
               !value ||
               typeof value !== "object"
@@ -330,10 +392,7 @@ function normalizeClientAccount(
             }
 
             const service =
-              value as Record<
-                string,
-                unknown
-              >;
+              value as Record<string, unknown>;
 
             const name = cleanString(
               service.name ??
@@ -353,15 +412,19 @@ function normalizeClientAccount(
                   `service-${index + 1}`,
                 `service-${index + 1}`,
               ),
+
               name,
+
               description:
                 cleanOptionalString(
                   service.description,
                 ),
+
               status:
                 cleanOptionalString(
                   service.status,
                 ) ?? "Active",
+
               startedAt:
                 cleanOptionalString(
                   service.startedAt,
@@ -377,21 +440,41 @@ function normalizeClientAccount(
           )
       : undefined;
 
+  /*
+   * Return the normalized client.
+   */
   return {
     id,
     clientId,
     username,
 
-    name: cleanString(raw.name),
+    /*
+     * THIS WAS THE MISSING PART.
+     * Client password is now preserved.
+     */
+    password,
+    loginPassword: password || undefined,
+
+    name: cleanString(
+      raw.name,
+    ),
+
     companyName: cleanString(
       raw.companyName,
     ),
-    email: cleanString(raw.email),
+
+    email: cleanString(
+      raw.email,
+    ),
 
     role: "client",
 
     status,
 
+    /*
+     * Active only when account is active,
+     * status is Active, and portal is enabled.
+     */
     active:
       raw.active !== false &&
       status === "Active" &&
@@ -402,17 +485,20 @@ function normalizeClientAccount(
       new Date().toISOString(),
     ),
 
-    phone: cleanOptionalString(
-      raw.phone,
-    ),
+    phone:
+      cleanOptionalString(
+        raw.phone,
+      ),
 
-    website: cleanOptionalString(
-      raw.website,
-    ),
+    website:
+      cleanOptionalString(
+        raw.website,
+      ),
 
-    plan: cleanOptionalString(
-      raw.plan,
-    ),
+    plan:
+      cleanOptionalString(
+        raw.plan,
+      ),
 
     assignedManager:
       cleanOptionalString(
@@ -488,6 +574,9 @@ function mergeSettings(
 ): GlobalAdminSettings {
   const parsed = incoming ?? {};
 
+  /*
+   * Normalize every saved client account.
+   */
   const clients = Array.isArray(
     parsed.clients,
   )
@@ -501,6 +590,7 @@ function mergeSettings(
 
   return {
     ...DEFAULT_GLOBAL_ADMIN_SETTINGS,
+
     ...parsed,
 
     general: {
@@ -579,6 +669,10 @@ export function saveGlobalAdminSettings(
     return;
   }
 
+  /*
+   * Normalize BEFORE saving.
+   * This guarantees password is retained inside client accounts.
+   */
   const normalized =
     mergeSettings(settings);
 
@@ -644,23 +738,53 @@ export function saveClientAccount(
   const clients =
     current.clients ?? [];
 
-  const next = clients.some(
-    (item) => item.id === client.id,
-  )
+  /*
+   * Normalize the incoming client first.
+   * This ensures password/loginPassword are kept.
+   */
+  const normalizedClient =
+    normalizeClientAccount({
+      ...client,
+
+      /*
+       * Keep both fields synchronized.
+       */
+      password:
+        client.password ??
+        client.loginPassword ??
+        "",
+
+      loginPassword:
+        client.loginPassword ??
+        client.password ??
+        "",
+
+      role: "client",
+    });
+
+  /*
+   * Invalid client object should not overwrite data.
+   */
+  if (!normalizedClient) {
+    return;
+  }
+
+  const exists = clients.some(
+    (item) =>
+      item.id ===
+      normalizedClient.id,
+  );
+
+  const next = exists
     ? clients.map((item) =>
-        item.id === client.id
-          ? {
-              ...client,
-              role: "client" as const,
-            }
+        item.id ===
+        normalizedClient.id
+          ? normalizedClient
           : item,
       )
     : [
         ...clients,
-        {
-          ...client,
-          role: "client" as const,
-        },
+        normalizedClient,
       ];
 
   saveGlobalAdminSettings({
@@ -742,7 +866,9 @@ export function useGlobalAdminSettings() {
     );
 
   if (!snapshot) {
-    return DEFAULT_GLOBAL_ADMIN_SETTINGS;
+    return mergeSettings(
+      DEFAULT_GLOBAL_ADMIN_SETTINGS,
+    );
   }
 
   try {
@@ -750,6 +876,8 @@ export function useGlobalAdminSettings() {
       JSON.parse(snapshot) as GlobalAdminSettings,
     );
   } catch {
-    return DEFAULT_GLOBAL_ADMIN_SETTINGS;
+    return mergeSettings(
+      DEFAULT_GLOBAL_ADMIN_SETTINGS,
+    );
   }
 }
