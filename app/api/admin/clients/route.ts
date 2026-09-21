@@ -47,7 +47,7 @@ type ClientDocument = {
 
 declare global {
   // eslint-disable-next-line no-var
-  var __hcsMongoClient: MongoClient | undefined;
+  var __hcs: MongoClient | undefined;
   // eslint-disable-next-line no-var
   var __hcsMongoPromise: Promise<MongoClient> | undefined;
 }

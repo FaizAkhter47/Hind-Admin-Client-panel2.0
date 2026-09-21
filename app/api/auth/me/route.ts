@@ -1,12 +1,6 @@
-import { NextResponse } from "next/server";
-import {
-  createHmac,
-  timingSafeEqual,
-} from "node:crypto";
-import {
-  MongoClient,
-  ObjectId,
-} from "mongodb";
+import { NextRequest, NextResponse } from "next/server";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { MongoClient, ObjectId } from "mongodb";
 
 export const runtime = "nodejs";
 
@@ -22,17 +16,13 @@ type SessionPayload = {
   nonce?: string;
 };
 
-let mongoClientPromise: Promise<MongoClient> | null =
-  null;
+let mongoClientPromise: Promise<MongoClient> | null = null;
 
 function getMongoUri(): string {
-  const uri =
-    process.env.MONGODB_URI?.trim();
+  const uri = process.env.MONGODB_URI?.trim();
 
   if (!uri) {
-    throw new Error(
-      "MONGODB_URI is not configured.",
-    );
+    throw new Error("MONGODB_URI is not configured.");
   }
 
   return uri;
@@ -49,30 +39,24 @@ function getDatabaseName(): string {
 
   const uri = getMongoUri();
 
-  const withoutProtocol =
-    uri.replace(
-      /^mongodb(?:\+srv)?:\/\//,
-      "",
-    );
+  const withoutProtocol = uri.replace(
+    /^mongodb(?:\+srv)?:\/\//,
+    "",
+  );
 
-  const slashIndex =
-    withoutProtocol.indexOf("/");
+  const slashIndex = withoutProtocol.indexOf("/");
 
   if (slashIndex !== -1) {
-    const afterSlash =
-      withoutProtocol.slice(
-        slashIndex + 1,
-      );
+    const afterSlash = withoutProtocol.slice(
+      slashIndex + 1,
+    );
 
-    const databaseName =
-      afterSlash
-        .split("?")[0]
-        .trim();
+    const databaseName = afterSlash
+      .split("?")[0]
+      .trim();
 
     if (databaseName) {
-      return decodeURIComponent(
-        databaseName,
-      );
+      return decodeURIComponent(databaseName);
     }
   }
 
@@ -95,26 +79,20 @@ function getClientCollectionName(): string {
 
 async function getMongoClient(): Promise<MongoClient> {
   if (!mongoClientPromise) {
-    const client =
-      new MongoClient(
-        getMongoUri(),
-        {
-          maxPoolSize: 10,
-          minPoolSize: 0,
-          serverSelectionTimeoutMS: 10_000,
-        },
-      );
+    const client = new MongoClient(getMongoUri(), {
+      maxPoolSize: 10,
+      minPoolSize: 0,
+      serverSelectionTimeoutMS: 10_000,
+    });
 
-    mongoClientPromise =
-      client.connect();
+    mongoClientPromise = client.connect();
   }
 
   return mongoClientPromise;
 }
 
 function getSessionSecret(): string {
-  const secret =
-    process.env.HCS_SESSION_SECRET?.trim();
+  const secret = process.env.HCS_SESSION_SECRET?.trim();
 
   if (!secret) {
     throw new Error(
@@ -139,54 +117,40 @@ function safeEqual(
     return false;
   }
 
-  return timingSafeEqual(
-    a,
-    b,
-  );
+  return timingSafeEqual(a, b);
 }
 
 function decodeSession(
   token: string,
 ): SessionPayload {
-  const parts =
-    token.split(".");
+  const parts = token.split(".");
 
   if (parts.length !== 2) {
-    throw new Error(
-      "Invalid session token.",
-    );
+    throw new Error("Invalid session token.");
   }
 
-  const [
-    encoded,
-    signature,
-  ] = parts;
+  const [encoded, signature] = parts;
 
   if (!encoded || !signature) {
-    throw new Error(
-      "Invalid session token.",
-    );
+    throw new Error("Invalid session token.");
   }
 
-  const expectedSignature =
-    createHmac(
-      "sha256",
-      getSessionSecret(),
-    )
-      .update(encoded)
-      .digest("base64url");
+  const expectedSignature = createHmac(
+    "sha256",
+    getSessionSecret(),
+  )
+    .update(encoded)
+    .digest("base64url");
 
-  const providedBuffer =
-    Buffer.from(
-      signature,
-      "utf8",
-    );
+  const providedBuffer = Buffer.from(
+    signature,
+    "utf8",
+  );
 
-  const expectedBuffer =
-    Buffer.from(
-      expectedSignature,
-      "utf8",
-    );
+  const expectedBuffer = Buffer.from(
+    expectedSignature,
+    "utf8",
+  );
 
   if (
     !safeEqual(
@@ -259,24 +223,27 @@ async function findAccount(
   role: AuthRole,
   subject: string,
 ) {
-  const client =
-    await getMongoClient();
+  const client = await getMongoClient();
 
-  const db =
-    client.db(
-      getDatabaseName(),
-    );
+  const db = client.db(
+    getDatabaseName(),
+  );
 
-  const collection =
-    db.collection(
-      role === "admin"
-        ? getAdminCollectionName()
-        : getClientCollectionName(),
-    );
+  const collection = db.collection(
+    role === "admin"
+      ? getAdminCollectionName()
+      : getClientCollectionName(),
+  );
 
   const idCandidates =
-    getDocumentIdCandidates(
-      subject,
+    getDocumentIdCandidates(subject);
+
+  const objectIdCandidates =
+    idCandidates.filter(
+      (
+        candidate,
+      ): candidate is ObjectId =>
+        candidate instanceof ObjectId,
     );
 
   const identityField =
@@ -284,15 +251,20 @@ async function findAccount(
       ? "adminId"
       : "clientId";
 
-  const objectIdCandidates = idCandidates.filter(
-    (candidate): candidate is ObjectId =>
-      candidate instanceof ObjectId,
-  );
-
   return collection.findOne({
     $or: [
-      { _id: { $in: objectIdCandidates } },
-      { [identityField]: subject },
+      ...(objectIdCandidates.length > 0
+        ? [
+            {
+              _id: {
+                $in: objectIdCandidates,
+              },
+            },
+          ]
+        : []),
+      {
+        [identityField]: subject,
+      },
     ],
   });
 }
@@ -302,110 +274,92 @@ function buildSafeUser(
   account: Record<string, unknown>,
 ) {
   if (role === "admin") {
-    const id =
-      String(
-        account._id ??
-          account.adminId ??
-          "",
-      );
+    const id = String(
+      account._id ??
+        account.adminId ??
+        "",
+    );
 
     return {
       id,
-      adminId:
-        account.adminId
-          ? String(
-              account.adminId,
-            )
+
+      adminId: account.adminId
+        ? String(account.adminId)
+        : undefined,
+
+      accountId: account._id
+        ? String(account._id)
+        : account.adminId
+          ? String(account.adminId)
           : undefined,
-      accountId:
-        account._id
-          ? String(account._id)
-          : account.adminId
-            ? String(
-                account.adminId,
-              )
-            : undefined,
-      username:
-        account.username
-          ? String(
-              account.username,
-            )
-          : undefined,
-      name:
-        account.fullName
-          ? String(
-              account.fullName,
-            )
-          : account.name
-            ? String(
-                account.name,
-              )
-            : "HCS Administrator",
-      fullName:
-        account.fullName
-          ? String(
-              account.fullName,
-            )
-          : undefined,
-      email:
-        account.email
-          ? String(
-              account.email,
-            )
-          : undefined,
+
+      username: account.username
+        ? String(account.username)
+        : undefined,
+
+      name: account.fullName
+        ? String(account.fullName)
+        : account.name
+          ? String(account.name)
+          : "HCS Administrator",
+
+      fullName: account.fullName
+        ? String(account.fullName)
+        : undefined,
+
+      email: account.email
+        ? String(account.email)
+        : undefined,
+
+      phone: account.phone
+        ? String(account.phone)
+        : undefined,
+
       role: "admin" as const,
     };
   }
 
-  const id =
-    String(
-      account._id ??
-        account.clientId ??
-        "",
-    );
+  const id = String(
+    account._id ??
+      account.clientId ??
+      "",
+  );
 
   return {
     id,
-    clientId:
-      account.clientId
-        ? String(
-            account.clientId,
-          )
+
+    clientId: account.clientId
+      ? String(account.clientId)
+      : undefined,
+
+    accountId: account._id
+      ? String(account._id)
+      : account.clientId
+        ? String(account.clientId)
         : undefined,
-    accountId:
-      account._id
-        ? String(account._id)
-        : account.clientId
-          ? String(
-              account.clientId,
-            )
-          : undefined,
-    username:
-      account.username
-        ? String(
-            account.username,
-          )
-        : undefined,
-    name:
-      account.name
-        ? String(account.name)
-        : account.companyName
-          ? String(
-              account.companyName,
-            )
-          : "Client",
-    email:
-      account.email
-        ? String(
-            account.email,
-          )
-        : undefined,
-    companyName:
-      account.companyName
-        ? String(
-            account.companyName,
-          )
-        : "",
+
+    username: account.username
+      ? String(account.username)
+      : undefined,
+
+    name: account.name
+      ? String(account.name)
+      : account.companyName
+        ? String(account.companyName)
+        : "Client",
+
+    email: account.email
+      ? String(account.email)
+      : undefined,
+
+    companyName: account.companyName
+      ? String(account.companyName)
+      : "",
+
+    phone: account.phone
+      ? String(account.phone)
+      : undefined,
+
     role: "client" as const,
   };
 }
@@ -428,27 +382,128 @@ function clearSessionCookie(
   );
 }
 
-export async function GET() {
+function unauthorizedResponse(
+  message = "Not authenticated.",
+) {
+  const response = NextResponse.json(
+    {
+      success: false,
+      authenticated: false,
+      user: null,
+      message,
+    },
+    {
+      status: 401,
+      headers: {
+        "Cache-Control": "no-store",
+      },
+    },
+  );
+
+  return response;
+}
+
+export async function GET(
+  request: NextRequest,
+) {
   try {
     const token =
-      (
-        await Promise.resolve()
+      request.cookies.get(
+        SESSION_COOKIE_NAME,
+      )?.value;
+
+    if (!token) {
+      return unauthorizedResponse(
+        "No active session.",
+      );
+    }
+
+    let session: SessionPayload;
+
+    try {
+      session = decodeSession(token);
+    } catch (error) {
+      console.error(
+        "HCS auth/me session decode error:",
+        error,
       );
 
-    void token;
+      const response =
+        unauthorizedResponse(
+          "Invalid session.",
+        );
 
-    /*
-     * Cookie access is handled below through
-     * NextResponse request context.
-     */
+      clearSessionCookie(response);
+
+      return response;
+    }
+
+    if (
+      !session.sub ||
+      !session.role ||
+      !isValidRole(session.role)
+    ) {
+      const response =
+        unauthorizedResponse(
+          "Invalid session data.",
+        );
+
+      clearSessionCookie(response);
+
+      return response;
+    }
+
+    if (
+      typeof session.exp !== "number" ||
+      session.exp <=
+        Math.floor(Date.now() / 1000)
+    ) {
+      const response =
+        unauthorizedResponse(
+          "Session expired.",
+        );
+
+      clearSessionCookie(response);
+
+      return response;
+    }
+
+    const account =
+      await findAccount(
+        session.role,
+        session.sub,
+      );
+
+    if (!account) {
+      const response =
+        unauthorizedResponse(
+          "Account not found.",
+        );
+
+      clearSessionCookie(response);
+
+      return response;
+    }
+
+    const user = buildSafeUser(
+      session.role,
+      account as Record<
+        string,
+        unknown
+      >,
+    );
+
     return NextResponse.json(
       {
-        success: false,
-        message:
-          "Session request could not be processed.",
+        success: true,
+        authenticated: true,
+        user,
       },
       {
-        status: 500,
+        status: 200,
+        headers: {
+          "Cache-Control": "no-store",
+        },
       },
     );
   } catch (error) {
@@ -460,11 +515,16 @@ export async function GET() {
     return NextResponse.json(
       {
         success: false,
+        authenticated: false,
+        user: null,
         message:
           "Unable to verify session.",
       },
       {
         status: 500,
+        headers: {
+          "Cache-Control": "no-store",
+        },
       },
     );
   }
