@@ -56,6 +56,7 @@ type Section =
   | "reports"
   | "competitors"
   | "notifications"
+  | "settings"
   | "profile";
 
 type AnyRecord = Record<string, unknown>;
@@ -371,6 +372,11 @@ const NAV_ITEMS: Array<{
     label: "Notifications",
     icon: "♢",
     permission: "notifications",
+  },
+  {
+    id: "settings",
+    label: "Settings",
+    icon: "⚙",
   },
 ];
 
@@ -4530,6 +4536,117 @@ export default function ClientPage() {
   }
 
   /* =======================================================
+     SETTINGS
+  ======================================================== */
+
+  function renderSettings() {
+    if (!client) {
+      return null;
+    }
+
+    return (
+      <div className="client-section">
+        <SectionHeader
+          eyebrow="SETTINGS"
+          title="Settings"
+          description="View your HCS client portal configuration and account settings."
+        />
+
+        <div className="client-profile-grid">
+          <div className="client-content-card">
+            <div className="client-card-header">
+              <div>
+                <span>PORTAL</span>
+                <h2>Portal Configuration</h2>
+              </div>
+            </div>
+
+            <div className="client-detail-grid">
+              <DetailItem
+                label="Portal Access"
+                value={client.clientPortalEnabled ? "Enabled" : "Disabled"}
+              />
+              <DetailItem
+                label="Account Status"
+                value={client.status}
+              />
+              <DetailItem
+                label="Client ID"
+                value={client.clientId}
+              />
+              <DetailItem
+                label="Assigned Websites"
+                value={String(websites.length)}
+              />
+              <DetailItem
+                label="Assigned Services"
+                value={String(services.length)}
+              />
+              <DetailItem
+                label="Last Sync"
+                value={formatDate(lastUpdated)}
+              />
+            </div>
+          </div>
+
+          <div className="client-content-card">
+            <div className="client-card-header">
+              <div>
+                <span>SECURITY</span>
+                <h2>Account Security</h2>
+              </div>
+            </div>
+
+            <p className="client-muted-text">
+              Your password is managed securely by the existing HCS authentication API. No password is stored in localStorage.
+            </p>
+
+            <button
+              type="button"
+              className="client-primary-button"
+              onClick={() => {
+                setPasswordError("");
+                setPasswordState({ current: "", next: "", confirm: "" });
+                setPasswordModalOpen(true);
+              }}
+            >
+              Change Password →
+            </button>
+          </div>
+
+          <div className="client-content-card">
+            <div className="client-card-header">
+              <div>
+                <span>ACCESS</span>
+                <h2>Portal Modules</h2>
+              </div>
+            </div>
+
+            <div className="client-access-grid">
+              {NAV_ITEMS.filter((item) => item.permission).map((item) => {
+                const enabled = item.permission
+                  ? permissionEnabled(client, item.permission)
+                  : false;
+
+                return (
+                  <div
+                    key={item.id}
+                    className={`client-access-item ${enabled ? "enabled" : "disabled"}`}
+                  >
+                    <span>{item.icon}</span>
+                    <strong>{item.label}</strong>
+                    <small>{enabled ? "Enabled" : "Not enabled"}</small>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* =======================================================
      SECTION SWITCH
   ======================================================== */
 
@@ -4564,6 +4681,9 @@ export default function ClientPage() {
 
       case "notifications":
         return renderNotifications();
+
+      case "settings":
+        return renderSettings();
 
       case "profile":
         return renderProfile();
@@ -4786,6 +4906,24 @@ export default function ClientPage() {
           </div>
 
           <div className="client-topbar-actions">
+            <div
+              className="client-topbar-logo"
+              aria-label="Hind Consultancy Services"
+            >
+              <Image
+                src="/images/logo.png"
+                alt="Hind Consultancy Services"
+                width={128}
+                height={40}
+                priority
+                style={{
+                  width: "128px",
+                  height: "40px",
+                  objectFit: "contain",
+                }}
+              />
+            </div>
+
             <button
               type="button"
               className="client-refresh-button"
