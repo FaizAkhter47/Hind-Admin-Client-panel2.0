@@ -360,6 +360,80 @@ function buildSafeUser(
       ? String(account.phone)
       : undefined,
 
+    fullName: account.fullName
+      ? String(account.fullName)
+      : undefined,
+
+    website: account.website
+      ? String(account.website)
+      : undefined,
+
+    plan: account.plan
+      ? String(account.plan)
+      : undefined,
+
+    assignedManager: account.assignedManager
+      ? String(account.assignedManager)
+      : undefined,
+
+    status: account.status
+      ? String(account.status)
+      : "Active",
+
+    active: account.active !== false,
+
+    clientPortalEnabled: account.clientPortalEnabled !== false,
+
+    permissions: Array.isArray(account.permissions)
+      ? account.permissions.map(String)
+      : account.permissions && typeof account.permissions === "object"
+        ? account.permissions
+        : undefined,
+
+    assignedWebsiteIds: Array.isArray(account.assignedWebsiteIds)
+      ? account.assignedWebsiteIds.map(String)
+      : [],
+
+    tags: Array.isArray(account.tags)
+      ? account.tags.map(String)
+      : [],
+
+    notes: account.notes
+      ? String(account.notes)
+      : undefined,
+
+    services: Array.isArray(account.services)
+      ? account.services
+      : [],
+
+    assignedServices: Array.isArray(account.assignedServices)
+      ? account.assignedServices
+      : [],
+
+    serviceAccess: Array.isArray(account.serviceAccess)
+      ? account.serviceAccess
+      : [],
+
+    selectedServices: Array.isArray(account.selectedServices)
+      ? account.selectedServices
+      : [],
+
+    portalData: account.portalData && typeof account.portalData === "object"
+      ? account.portalData
+      : undefined,
+
+    createdAt: account.createdAt
+      ? String(account.createdAt)
+      : undefined,
+
+    updatedAt: account.updatedAt
+      ? String(account.updatedAt)
+      : undefined,
+
+    lastLogin: account.lastLogin
+      ? String(account.lastLogin)
+      : null,
+
     role: "client" as const,
   };
 }

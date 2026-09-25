@@ -930,7 +930,10 @@ function permissionEnabled(
     );
   }
 
-  return false;
+  // Older client accounts may not have a permissions field.
+  // In that case all portal modules remain visible; an explicit
+  // permissions array/object is still respected above.
+  return true;
 }
 
 /* =========================================================
@@ -1030,6 +1033,26 @@ function recordBelongsToCurrentClient(
 /* =========================================================
    PORTAL DATA
 ========================================================= */
+
+function buildPortalDataFromApi(
+  raw: Record<string, unknown>,
+): PortalData {
+  const rows = (key: string): AnyRecord[] =>
+    recordArray(raw[key]);
+
+  return {
+    websites: rows("websites").map(normalizeWebsite),
+    keywords: rows("keywords").map(normalizeKeyword),
+    rankings: rows("ranking").map(normalizeRanking),
+    pages: rows("pages").map(normalizePage),
+    blogs: rows("blogs").map(normalizeBlog),
+    backlinks: rows("backlinks").map(normalizeBacklink),
+    technical: rows("technical").map(normalizeTechnical),
+    reports: rows("reports").map(normalizeReport),
+    notifications: rows("notifications").map(normalizeNotification),
+    competitors: rows("competitors").map(normalizeCompetitor),
+  };
+}
 
 function buildPortalData(
   client: ExtendedClientAccount,
@@ -2119,13 +2142,49 @@ export default function ClientPage() {
             return;
           }
 
-          setClient(
-            currentClient,
-          );
+          const recordsResponse =
+            await fetch(
+              "/api/client/records",
+              {
+                method: "GET",
+                credentials: "include",
+                cache: "no-store",
+                headers: {
+                  Accept: "application/json",
+                },
+              },
+            );
 
+          const recordsData =
+            await recordsResponse
+              .json()
+              .catch(() => null);
+
+          if (
+            !recordsResponse.ok ||
+            !recordsData?.success ||
+            !recordsData?.records
+          ) {
+            throw new Error(
+              recordsData?.message ||
+                "Unable to load client records.",
+            );
+          }
+
+          const nextClient = {
+            ...currentClient,
+            assignedWebsiteIds:
+              Array.isArray(
+                recordsData.assignedWebsiteIds,
+              )
+                ? recordsData.assignedWebsiteIds.map(String)
+                : currentClient.assignedWebsiteIds,
+          };
+
+          setClient(nextClient);
           setPortalData(
-            buildPortalData(
-              currentClient,
+            buildPortalDataFromApi(
+              recordsData.records as Record<string, unknown>,
             ),
           );
 
@@ -2168,34 +2227,9 @@ export default function ClientPage() {
         void syncClient(true);
       };
 
-    const handleStorage = (
-      event: StorageEvent,
-    ) => {
-      const allKeys =
-        Object.values(
-          STORAGE_KEYS,
-        ).flat();
-
-      if (
-        event.key &&
-        allKeys.includes(
-          event.key,
-        )
-      ) {
-        void syncClient(
-          false,
-        );
-      }
-    };
-
     window.addEventListener(
       PORTAL_SYNC_EVENT,
       handlePortalUpdate as EventListener,
-    );
-
-    window.addEventListener(
-      "storage",
-      handleStorage,
     );
 
     const interval =
@@ -2212,11 +2246,6 @@ export default function ClientPage() {
       window.removeEventListener(
         PORTAL_SYNC_EVENT,
         handlePortalUpdate as EventListener,
-      );
-
-      window.removeEventListener(
-        "storage",
-        handleStorage,
       );
 
       window.clearInterval(
@@ -2248,6 +2277,7 @@ export default function ClientPage() {
 
     if (
       section !== "profile" &&
+      section !== "settings" &&
       !permissionEnabled(
         client,
         section as PermissionKey,
@@ -4703,7 +4733,7 @@ export default function ClientPage() {
       <div className="client-loading-screen">
         <div className="client-loading-card">
           <Image
-            src="/images/logo.png"
+            src="/logo.png"
             alt="Hind Consultancy Services"
             width={190}
             height={58}
@@ -4753,7 +4783,7 @@ export default function ClientPage() {
       >
         <div className="client-sidebar-brand">
           <Image
-            src="/images/logo.png"
+            src="/logo.png"
             alt="Hind Consultancy Services"
             width={175}
             height={54}
@@ -4911,7 +4941,7 @@ export default function ClientPage() {
               aria-label="Hind Consultancy Services"
             >
               <Image
-                src="/images/logo.png"
+                src="/logo.png"
                 alt="Hind Consultancy Services"
                 width={128}
                 height={40}
