@@ -332,6 +332,14 @@ const DEFAULT_PERMISSIONS: PermissionMap =
     notifications: true,
   };
 
+const CLIENT_SERVICES = [
+  'Web & App Development',
+  'SEO & Digital Marketing',
+  'Business Consultancy',
+  'Documentation & Compliance',
+  'IT Solutions',
+];
+
 const LABEL: Record<
   SectionKey,
   string
@@ -346,6 +354,190 @@ const LABEL: Record<
 >;
 
 /* =========================================================
+   ADVANCED MODULE FORM SYSTEM
+   ---------------------------------------------------------
+   Every SEO module is edited through a structured form.
+   Custom key/value fields preserve legacy data without
+   exposing a raw JSON editor to the admin.
+========================================================= */
+
+type ModuleFieldType =
+  | "text"
+  | "url"
+  | "email"
+  | "number"
+  | "date"
+  | "datetime-local"
+  | "select"
+  | "textarea"
+  | "checkbox";
+
+type ModuleField = {
+  key: string;
+  label: string;
+  type?: ModuleFieldType;
+  placeholder?: string;
+  required?: boolean;
+  wide?: boolean;
+  options?: string[];
+  help?: string;
+};
+
+const MODULE_FORM_FIELDS: Record<GenericModule, ModuleField[]> = {
+  websites: [
+    { key: "name", label: "Website Name", required: true },
+    { key: "domain", label: "Domain", placeholder: "example.com", required: true },
+    { key: "url", label: "Website URL", type: "url", placeholder: "https://example.com" },
+    { key: "clientId", label: "Client ID" },
+    { key: "status", label: "Status", type: "select", options: ["Active", "Paused", "Archived", "Pending"] },
+    { key: "category", label: "Business Category" },
+    { key: "targetCountry", label: "Target Country" },
+    { key: "targetCity", label: "Target City" },
+    { key: "primaryKeyword", label: "Primary Keyword" },
+    { key: "manager", label: "Assigned Manager" },
+    { key: "notes", label: "Notes", type: "textarea", wide: true },
+  ],
+  keywords: [
+    { key: "keyword", label: "Keyword", required: true },
+    { key: "websiteId", label: "Website ID" },
+    { key: "clientId", label: "Client ID" },
+    { key: "targetUrl", label: "Target URL", type: "url" },
+    { key: "searchVolume", label: "Search Volume", type: "number" },
+    { key: "difficulty", label: "Keyword Difficulty", type: "number" },
+    { key: "currentRank", label: "Current Rank", type: "number" },
+    { key: "targetRank", label: "Target Rank", type: "number" },
+    { key: "intent", label: "Search Intent", type: "select", options: ["Informational", "Commercial", "Transactional", "Navigational", "Local"] },
+    { key: "status", label: "Status", type: "select", options: ["Active", "Tracking", "Won", "Dropped", "Paused"] },
+    { key: "tags", label: "Tags", placeholder: "seo, local, primary" },
+    { key: "notes", label: "Notes", type: "textarea", wide: true },
+  ],
+  ranking: [
+    { key: "keyword", label: "Keyword", required: true },
+    { key: "websiteId", label: "Website ID" },
+    { key: "clientId", label: "Client ID" },
+    { key: "searchEngine", label: "Search Engine", type: "select", options: ["Google", "Bing", "Yahoo", "Other"] },
+    { key: "location", label: "Location" },
+    { key: "device", label: "Device", type: "select", options: ["Desktop", "Mobile", "Tablet"] },
+    { key: "previousPosition", label: "Previous Position", type: "number" },
+    { key: "currentPosition", label: "Current Position", type: "number" },
+    { key: "searchVolume", label: "Search Volume", type: "number" },
+    { key: "checkedAt", label: "Checked At", type: "date" },
+    { key: "status", label: "Status", type: "select", options: ["Tracked", "Improved", "Declined", "Stable"] },
+    { key: "notes", label: "Notes", type: "textarea", wide: true },
+  ],
+  pages: [
+    { key: "title", label: "Page Title", required: true },
+    { key: "url", label: "Page URL", type: "url", required: true },
+    { key: "clientId", label: "Client ID" },
+    { key: "websiteId", label: "Website ID" },
+    { key: "type", label: "Page Type", type: "select", options: ["Landing Page", "Service", "Product", "Category", "Blog", "Other"] },
+    { key: "status", label: "Status", type: "select", options: ["Draft", "Published", "Needs Update", "Archived"] },
+    { key: "indexability", label: "Indexability", type: "select", options: ["Index", "Noindex", "Blocked"] },
+    { key: "metaTitle", label: "Meta Title" },
+    { key: "metaDescription", label: "Meta Description", type: "textarea", wide: true },
+    { key: "canonical", label: "Canonical URL", type: "url" },
+    { key: "wordCount", label: "Word Count", type: "number" },
+    { key: "notes", label: "Notes", type: "textarea", wide: true },
+  ],
+  blogs: [
+    { key: "title", label: "Blog Title", required: true },
+    { key: "slug", label: "Slug" },
+    { key: "url", label: "Blog URL", type: "url" },
+    { key: "clientId", label: "Client ID" },
+    { key: "websiteId", label: "Website ID" },
+    { key: "author", label: "Author" },
+    { key: "status", label: "Status", type: "select", options: ["Draft", "Scheduled", "Published", "Archived"] },
+    { key: "publishedAt", label: "Published At", type: "date" },
+    { key: "category", label: "Category" },
+    { key: "tags", label: "Tags", placeholder: "ayurveda, allergy, wellness" },
+    { key: "metaTitle", label: "Meta Title" },
+    { key: "metaDescription", label: "Meta Description", type: "textarea", wide: true },
+    { key: "content", label: "Article Content", type: "textarea", wide: true },
+    { key: "notes", label: "Notes", type: "textarea", wide: true },
+  ],
+  backlinks: [
+    { key: "targetUrl", label: "Target URL", type: "url", required: true },
+    { key: "sourceUrl", label: "Source URL", type: "url", required: true },
+    { key: "anchorText", label: "Anchor Text" },
+    { key: "clientId", label: "Client ID" },
+    { key: "websiteId", label: "Website ID" },
+    { key: "linkType", label: "Link Type", type: "select", options: ["Editorial", "Profile", "Forum", "Social", "Bookmarking", "Directory", "Guest Post", "Other"] },
+    { key: "status", label: "Status", type: "select", options: ["Live", "Pending", "Removed", "Rejected", "To Verify"] },
+    { key: "domainAuthority", label: "Domain Authority", type: "number" },
+    { key: "pageAuthority", label: "Page Authority", type: "number" },
+    { key: "nofollow", label: "Nofollow", type: "checkbox" },
+    { key: "placedAt", label: "Placed At", type: "date" },
+    { key: "notes", label: "Notes", type: "textarea", wide: true },
+  ],
+  technical: [
+    { key: "issue", label: "Issue", required: true },
+    { key: "affectedUrl", label: "Affected URL", type: "url" },
+    { key: "websiteId", label: "Website ID" },
+    { key: "clientId", label: "Client ID" },
+    { key: "category", label: "Issue Category", type: "select", options: ["Crawl", "Indexing", "Performance", "On-Page", "Schema", "Security", "Mobile", "Other"] },
+    { key: "severity", label: "Severity", type: "select", options: ["Critical", "High", "Medium", "Low"] },
+    { key: "priority", label: "Priority", type: "select", options: ["Urgent", "High", "Normal", "Low"] },
+    { key: "status", label: "Status", type: "select", options: ["Open", "In Progress", "Resolved", "Ignored"] },
+    { key: "recommendation", label: "Recommended Fix", type: "textarea", wide: true },
+    { key: "assignedTo", label: "Assigned To" },
+    { key: "dueDate", label: "Due Date", type: "date" },
+    { key: "notes", label: "Notes", type: "textarea", wide: true },
+  ],
+  reports: [
+    { key: "name", label: "Report Name", required: true },
+    { key: "clientId", label: "Client ID" },
+    { key: "websiteId", label: "Website ID" },
+    { key: "type", label: "Report Type", type: "select", options: ["SEO Performance", "Backlink", "Ranking", "Technical Audit", "Client Summary", "Monthly Report"] },
+    { key: "periodFrom", label: "Period From", type: "date" },
+    { key: "periodTo", label: "Period To", type: "date" },
+    { key: "status", label: "Status", type: "select", options: ["Draft", "Generated", "Delivered", "Archived"] },
+    { key: "summary", label: "Executive Summary", type: "textarea", wide: true },
+    { key: "findings", label: "Key Findings", type: "textarea", wide: true },
+    { key: "recommendations", label: "Recommendations", type: "textarea", wide: true },
+    { key: "notes", label: "Internal Notes", type: "textarea", wide: true },
+  ],
+  competitors: [
+    { key: "name", label: "Competitor Name", required: true },
+    { key: "domain", label: "Competitor Domain", required: true },
+    { key: "websiteId", label: "Your Website ID" },
+    { key: "clientId", label: "Client ID" },
+    { key: "status", label: "Status", type: "select", options: ["Tracking", "Active", "Ignored", "Archived"] },
+    { key: "keywordsCount", label: "Tracked Keywords", type: "number" },
+    { key: "estimatedTraffic", label: "Estimated Traffic", type: "number" },
+    { key: "visibility", label: "Visibility %", type: "number" },
+    { key: "notes", label: "Notes", type: "textarea", wide: true },
+  ],
+  notifications: [
+    { key: "title", label: "Notification Title", required: true },
+    { key: "clientId", label: "Client ID" },
+    { key: "type", label: "Type", type: "select", options: ["Task", "Ranking", "Backlink", "Report", "Technical", "Account", "General"] },
+    { key: "priority", label: "Priority", type: "select", options: ["Low", "Normal", "High", "Urgent"] },
+    { key: "channel", label: "Channel", type: "select", options: ["In-App", "Email", "Both"] },
+    { key: "status", label: "Status", type: "select", options: ["Unread", "Read", "Delivered", "Failed"] },
+    { key: "message", label: "Message", type: "textarea", wide: true, required: true },
+  ],
+};
+
+function defaultModuleRecord(section: GenericModule): AnyRecord {
+  const base: AnyRecord = {
+    id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `REC-${Date.now()}`,
+    status: section === "reports" ? "Draft" : section === "notifications" ? "Unread" : "Active",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const fields = MODULE_FORM_FIELDS[section] ?? [];
+  for (const field of fields) {
+    if (field.key === "nofollow") base[field.key] = false;
+    else if (field.type === "number") base[field.key] = "";
+    else if (field.type === "select") base[field.key] = field.options?.[0] ?? "";
+    else base[field.key] = "";
+  }
+  return base;
+}
+
+
+/* =========================================================
    ADMIN SETTINGS
    ---------------------------------------------------------
    IMPORTANT:
@@ -353,75 +545,50 @@ const LABEL: Record<
    MongoDB is the source of truth for clients.
 ========================================================= */
 
-function getGlobalAdminSettings():
-  GlobalAdminSettings {
-  const fallback: GlobalAdminSettings =
-    {
-      clients: [],
-      security: {},
-      account: {},
-    };
-
-  if (
-    typeof window ===
-    "undefined"
-  ) {
-    return fallback;
-  }
-
-  try {
-    const saved =
-      JSON.parse(
-        window.localStorage.getItem(
-          ADMIN_SETTINGS_KEY,
-        ) || "null",
-      );
-
-    if (
-      saved &&
-      typeof saved === "object"
-    ) {
-      return {
-        ...fallback,
-        ...saved,
-        clients: [],
-      };
-    }
-
-    return fallback;
-  } catch {
-    return fallback;
-  }
+function getGlobalAdminSettings(): GlobalAdminSettings {
+  return {
+    clients: [],
+    security: {},
+    account: {},
+  };
 }
 
-function saveGlobalAdminSettings(
+/* Settings persistence is handled by /api/admin/settings. */
+async function saveGlobalAdminSettings(
   settings: GlobalAdminSettings,
 ) {
-  if (
-    typeof window ===
-    "undefined"
-  ) {
-    return;
-  }
-
   const {
     clients: _clients,
     ...adminOnlySettings
   } = settings;
 
-  window.localStorage.setItem(
-    ADMIN_SETTINGS_KEY,
-    JSON.stringify({
-      ...adminOnlySettings,
-      clients: [],
+  const response = await fetch("/api/admin/settings", {
+    method: "PUT",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      settings: {
+        ...adminOnlySettings,
+        clients: [],
+      },
     }),
-  );
+  });
 
-  window.dispatchEvent(
-    new CustomEvent(
-      "hcs-admin-settings-updated",
-    ),
-  );
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok || data?.success === false) {
+    throw new Error(data?.message ?? "Unable to save admin settings.");
+  }
+
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent("hcs-admin-settings-updated"),
+    );
+  }
+
+  return data;
 }
 
 /* =========================================================
@@ -590,89 +757,91 @@ function titleOf(
   );
 }
 
-function readRecords(
-  keys: string[],
-) {
-  if (
-    typeof window ===
-    "undefined"
-  ) {
-    return [] as AnyRecord[];
+const recordCache: Record<GenericModule, AnyRecord[]> = {
+  websites: [],
+  keywords: [],
+  ranking: [],
+  pages: [],
+  blogs: [],
+  backlinks: [],
+  technical: [],
+  reports: [],
+  competitors: [],
+  notifications: [],
+};
+
+const moduleFromKeys = (keys: string[]) => {
+  return (Object.keys(MODULE_KEYS) as GenericModule[]).find(
+    (module) => MODULE_KEYS[module] === keys,
+  ) as GenericModule | undefined;
+};
+
+const cloneRecords = (records: AnyRecord[]) =>
+  records.map((record) => ({ ...record }));
+
+const recordsApi = async (
+  module: GenericModule,
+  options: RequestInit = {},
+) => {
+  const separator =
+    options.method === 'GET' || !options.method
+      ? '?'
+      : '';
+  const url = `/api/admin/records${separator}${
+    separator
+      ? `module=${encodeURIComponent(module)}`
+      : ''
+  }`;
+
+  const response = await fetch(url, {
+    credentials: 'include',
+    cache: 'no-store',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers ?? {}),
+    },
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok || data?.success === false) {
+    throw new Error(
+      data?.message ?? `Unable to save ${module} records.`,
+    );
   }
 
-  for (const key of keys) {
-    try {
-      const raw =
-        window.localStorage.getItem(
-          key,
-        );
+  return data;
+};
 
-      if (!raw) {
-        continue;
-      }
-
-      const parsed =
-        JSON.parse(raw);
-
-      const list =
-        Array.isArray(
-          parsed,
-        )
-          ? parsed
-          : parsed?.items ??
-            parsed?.data;
-
-      if (
-        Array.isArray(
-          list,
-        )
-      ) {
-        return list.filter(
-          (item: unknown) =>
-            item &&
-            typeof item ===
-              "object",
-        );
-      }
-    } catch {
-      // Ignore malformed records.
-    }
-  }
-
-  return [] as AnyRecord[];
+function readRecords(keys: string[]) {
+  const module = moduleFromKeys(keys);
+  if (!module) return [] as AnyRecord[];
+  return cloneRecords(recordCache[module]);
 }
 
-function writeRecords(
+async function writeRecords(
   section: GenericModule,
   records: AnyRecord[],
 ) {
-  if (
-    typeof window ===
-    "undefined"
-  ) {
-    return;
+  const normalized = cloneRecords(records);
+  recordCache[section] = normalized;
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('hcs-admin-portal-data-updated', {
+        detail: { section, records: normalized },
+      }),
+    );
   }
 
-  localStorage.setItem(
-    MODULE_KEYS[
-      section
-    ][0],
-    JSON.stringify(
-      records,
-    ),
-  );
-
-  window.dispatchEvent(
-    new CustomEvent(
-      "hcs-admin-portal-data-updated",
-      {
-        detail: {
-          section,
-          records,
-        },
-      },
-    ),
-  );
+  await recordsApi(section, {
+    method: 'PUT',
+    body: JSON.stringify({
+      module: section,
+      records: normalized,
+    }),
+  });
 }
 
 function nextClientId(
@@ -1088,90 +1257,87 @@ export default function AdminPage() {
   const load =
     useCallback(
       async () => {
-        const adminSettings =
-          getGlobalAdminSettings();
-
-        let mongoClients:
-          ClientAccount[] = [];
+        let adminSettings: GlobalAdminSettings = getGlobalAdminSettings();
+        let mongoClients: ClientAccount[] = [];
 
         try {
-          const response =
-            await fetch(
-              "/api/admin/clients",
-              {
-                method: "GET",
-                credentials:
-                  "include",
-                cache:
-                  "no-store",
-              },
-            );
+          const [clientsResponse, settingsResponse] =
+            await Promise.all([
+              fetch('/api/admin/clients', {
+                method: 'GET',
+                credentials: 'include',
+                cache: 'no-store',
+              }),
+              fetch('/api/admin/settings', {
+                method: 'GET',
+                credentials: 'include',
+                cache: 'no-store',
+              }),
+            ]);
 
-          const data =
-            await response.json();
+          const clientsData = await clientsResponse.json().catch(() => ({}));
+          const settingsData = await settingsResponse.json().catch(() => ({}));
 
           if (
-            response.ok &&
-            data?.success &&
-            Array.isArray(
-              data.clients,
-            )
+            clientsResponse.ok &&
+            clientsData?.success &&
+            Array.isArray(clientsData.clients)
           ) {
-            mongoClients =
-              data.clients;
+            mongoClients = clientsData.clients;
           } else {
-            console.error(
-              "Client API error:",
-              data?.message,
-            );
+            console.error('Client API error:', clientsData?.message);
+          }
+
+          if (
+            settingsResponse.ok &&
+            settingsData?.success &&
+            settingsData?.settings
+          ) {
+            adminSettings = {
+              ...adminSettings,
+              ...settingsData.settings,
+              clients: [],
+            };
           }
         } catch (error) {
-          console.error(
-            "MongoDB client load failed:",
-            error,
-          );
+          console.error('MongoDB admin data load failed:', error);
         }
 
-        const mergedSettings: GlobalAdminSettings =
-          {
-            ...adminSettings,
-            clients:
-              mongoClients,
-          };
+        const mergedSettings: GlobalAdminSettings = {
+          ...adminSettings,
+          clients: mongoClients,
+        };
 
-        setSettings(
-          mergedSettings,
-        );
+        setSettings(mergedSettings);
+        setDraftSettings(clone(mergedSettings));
 
-        setDraftSettings(
-          clone(
-            mergedSettings,
-          ),
-        );
+        const modules = Object.keys(MODULE_KEYS) as GenericModule[];
 
-        const next: Record<
-          string,
-          AnyRecord[]
-        > = {};
-
-        (
-          Object.keys(
-            MODULE_KEYS,
-          ) as GenericModule[]
-        ).forEach(
-          (key) => {
-            next[key] =
-              readRecords(
-                MODULE_KEYS[
-                  key
-                ],
+        await Promise.all(
+          modules.map(async (module) => {
+            try {
+              const data = await recordsApi(module, { method: 'GET' });
+              const moduleRecords = Array.isArray(data?.records)
+                ? data.records
+                : [];
+              recordCache[module] = moduleRecords.map((record: AnyRecord) => ({
+                ...record,
+              }));
+            } catch (error) {
+              console.error(
+                `Failed to load ${module} from MongoDB:`,
+                error,
               );
-          },
+              recordCache[module] = [];
+            }
+          }),
         );
 
-        setRecords(
-          next,
-        );
+        const next: Record<string, AnyRecord[]> = {};
+        modules.forEach((module) => {
+          next[module] = cloneRecords(recordCache[module]);
+        });
+        setRecords(next);
       },
       [],
     );
@@ -1568,14 +1734,19 @@ export default function AdminPage() {
     setToast(message);
   }
 
-  function logout() {
-    localStorage.removeItem(
-      AUTH_KEY,
-    );
-
-    window.location.replace(
-      "/",
-    );
+  async function logout() {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        credentials: 'include',
+        cache: 'no-store',
+      });
+    } catch {
+      // Redirect even if the logout endpoint cannot be reached.
+    } finally {
+      localStorage.removeItem(AUTH_KEY);
+      window.location.replace('/');
+    }
   }
 
   /* =======================================================
@@ -2473,175 +2644,116 @@ export default function AdminPage() {
     module: GenericModule,
     record?: AnyRecord,
   ) {
-    setModal({
-      section:
-        module,
-      record,
-    });
+    setModal({ section: module, record });
   }
 
-  function saveRecord(
+  async function saveRecord(
     module: GenericModule,
     record: AnyRecord,
   ) {
-    const list =
-      readRecords(
-        MODULE_KEYS[
-          module
-        ],
-      );
+    const list = readRecords(MODULE_KEYS[module]);
+    const id = idOf(record);
+    const index = list.findIndex(
+      (item, itemIndex) => idOf(item, itemIndex) === id,
+    );
 
-    const id =
-      idOf(record);
-
-    const index =
-      list.findIndex(
-        (
-          item,
-          itemIndex,
-        ) =>
-          idOf(
-            item,
-            itemIndex,
-          ) === id,
-      );
+    const enriched: AnyRecord = {
+      ...record,
+      updatedAt: new Date().toISOString(),
+    };
 
     const next =
       index >= 0
-        ? list.map(
-            (
-              item,
-              itemIndex,
-            ) =>
-              itemIndex ===
-              index
-                ? record
-                : item,
+        ? list.map((item, itemIndex) =>
+            itemIndex === index ? enriched : item,
           )
-        : [
-            ...list,
-            record,
-          ];
+        : [...list, enriched];
 
-    writeRecords(
-      module,
-      next,
-    );
+    try {
+      await writeRecords(module, next);
+    } catch (error) {
+      console.error('HCS module record save error:', error);
+      return note(`Unable to save ${LABEL[module].toLowerCase()} to MongoDB.`);
+    }
 
-    setModal(
-      null,
-    );
-
-    void load();
-
+    setModal(null);
+    await load();
     note(
-      `${LABEL[module]} record saved.`,
+      `${LABEL[module]} record ${index >= 0 ? 'updated' : 'created'} in MongoDB.`,
     );
   }
 
-  function deleteRecord(
+  async function deleteRecord(
     module: GenericModule,
     record: AnyRecord,
   ) {
     if (
       !confirm(
-        `Delete this ${LABEL[
-          module
-        ].toLowerCase()} record?`,
+        `Delete this ${LABEL[module].toLowerCase()} record?`,
       )
     ) {
       return;
     }
 
-    const id =
-      idOf(record);
-
-    const next =
-      readRecords(
-        MODULE_KEYS[
-          module
-        ],
-      ).filter(
-        (
-          item,
-          itemIndex,
-        ) =>
-          idOf(
-            item,
-            itemIndex,
-          ) !== id,
-      );
-
-    writeRecords(
-      module,
-      next,
+    const id = idOf(record);
+    const next = readRecords(MODULE_KEYS[module]).filter(
+      (item, itemIndex) => idOf(item, itemIndex) !== id,
     );
 
-    void load();
-
-    note(
-      "Record deleted.",
-    );
+    try {
+      await writeRecords(module, next);
+      await load();
+      note('Record deleted from MongoDB.');
+    } catch (error) {
+      console.error('HCS module record delete error:', error);
+      note('Unable to delete record from MongoDB.');
+    }
   }
 
   /* =======================================================
      ADMIN SETTINGS
   ======================================================== */
 
-  function saveSettings() {
-    if (
-      !draftSettings
-    ) {
-      return;
-    }
+  async function saveSettings() {
+    if (!draftSettings) return;
 
-    const account =
-      draftSettings.account as
-        | AdminAccountWithPassword
-        | undefined;
-
+    const account = draftSettings.account as
+      | AdminAccountWithPassword
+      | undefined;
     const password =
       account?.password ??
       account?.loginPassword ??
-      "";
+      '';
 
-    const error =
-      validatePassword(
-        password,
-        draftSettings.security,
-      );
-
-    if (error) {
-      return note(
-        error,
-      );
+    if (password) {
+      const error = validatePassword(password, draftSettings.security);
+      if (error) return note(error);
     }
 
-    saveGlobalAdminSettings(
-      draftSettings,
-    );
-
-    const updatedSettings =
-      {
+    try {
+      const updatedSettings = {
         ...draftSettings,
         clients: clients as ClientAccount[],
       } satisfies GlobalAdminSettings;
 
-    setSettings(
-      clone(
-        updatedSettings,
-      ),
-    );
+      await saveGlobalAdminSettings(updatedSettings);
 
-    setDraftSettings(
-      clone(
-        updatedSettings,
-      ),
-    );
+      const cleanSettings = clone({
+        ...updatedSettings,
+        account: {
+          ...(updatedSettings.account ?? {}),
+          password: undefined,
+          loginPassword: undefined,
+        },
+      });
 
-    note(
-      "Admin settings saved.",
-    );
+      setSettings(cleanSettings);
+      setDraftSettings(clone(cleanSettings));
+      note('Admin settings saved to MongoDB.');
+    } catch (error) {
+      console.error('HCS admin settings save error:', error);
+      note('Unable to save admin settings to MongoDB.');
+    }
   }
 
   /* =======================================================
@@ -2879,9 +2991,7 @@ export default function AdminPage() {
 
                 <button
                   type="button"
-                  onClick={
-                    logout
-                  }
+                  onClick={() => void logout()}
                 >
                   Logout
                 </button>
@@ -4683,20 +4793,12 @@ export default function AdminPage() {
 
       {modal ? (
         <RecordModal
-          section={
-            modal.section
-          }
-          initial={
-            modal.record
-          }
-          onClose={() =>
-            setModal(
-              null,
-            )
-          }
-          onSave={
-            saveRecord
-          }
+          section={modal.section}
+          initial={modal.record}
+          clients={clients}
+          websites={websites}
+          onClose={() => setModal(null)}
+          onSave={saveRecord}
         />
       ) : null}
 
@@ -5402,43 +5504,49 @@ function ClientDrawer({
           <section className="form-card">
             <div className="panel-heading">
               <div>
-                <span className="eyebrow">
-                  SERVICES
-                </span>
+                <span className="eyebrow">SERVICES</span>
 
                 <h3>
                   Service scope
                 </h3>
               </div>
+
+              <span className="record-count">
+                {form.services.length} selected
+              </span>
             </div>
 
             <p className="field-help">
-              Service assignments stay on the same client account. No fake service records are created here.
+              Choose the services this client can see or manage in the portal.
             </p>
 
-            <div className="selected-chip-list">
-              {form.services.length ? (
-                form.services.map(
-                  (
-                    service: string,
-                  ) => (
-                    <span
-                      key={
-                        service
-                      }
-                      className="selected-chip"
-                    >
-                      {
-                        service
-                      }
+            <div className="permission-grid">
+              {CLIENT_SERVICES.map((service) => {
+                const enabled = form.services.includes(service);
+                return (
+                  <button
+                    type="button"
+                    key={service}
+                    className={`permission-card ${enabled ? 'enabled' : ''}`}
+                    onClick={() =>
+                      set(
+                        'services',
+                        enabled
+                          ? form.services.filter((item: string) => item !== service)
+                          : [...form.services, service],
+                      )
+                    }
+                  >
+                    <span className="permission-check">
+                      {enabled ? '✓' : ''}
                     </span>
-                  ),
-                )
-              ) : (
-                <span className="empty-inline">
-                  No service records assigned.
-                </span>
-              )}
+                    <span>
+                      <strong>{service}</strong>
+                      <small>Client service assignment</small>
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </section>
 
@@ -5531,72 +5639,134 @@ function ClientDrawer({
 function RecordModal({
   section,
   initial,
+  clients,
+  websites,
   onClose,
   onSave,
 }: {
   section: GenericModule;
   initial?: AnyRecord;
+  clients: ExtendedClient[];
+  websites: AnyRecord[];
   onClose: () => void;
-  onSave: (
-    section: GenericModule,
-    record: AnyRecord,
-  ) => void;
+  onSave: (section: GenericModule, record: AnyRecord) => void | Promise<void>;
 }) {
-  const [
-    value,
-    setValue,
-  ] = useState(() =>
-    JSON.stringify(
-      initial ?? {
-        id: crypto.randomUUID(),
-        status:
-          "Active",
-        createdAt:
-          new Date().toISOString(),
-      },
-      null,
-      2,
-    ),
+  const fields = MODULE_FORM_FIELDS[section] ?? [];
+
+  const base = useMemo(
+    () => ({
+      ...defaultModuleRecord(section),
+      ...(initial ?? {}),
+    }),
+    [section, initial],
   );
 
-  const [
-    error,
-    setError,
-  ] = useState("");
+  const [form, setForm] = useState<AnyRecord>(base);
+  const [customFields, setCustomFields] = useState<
+    Array<{ key: string; value: string }>
+  >(() => {
+    const known = new Set([
+      ...fields.map((field) => field.key),
+      'id',
+      'createdAt',
+      'updatedAt',
+      'generatedAt',
+      'generatedBy',
+    ]);
 
-  function save() {
-    try {
-      const parsed =
-        JSON.parse(
-          value,
-        );
+    return Object.entries(initial ?? {})
+      .filter(([key]) => !known.has(key))
+      .map(([key, value]) => ({
+        key,
+        value:
+          Array.isArray(value)
+            ? value.join(', ')
+            : typeof value === 'object' && value !== null
+              ? JSON.stringify(value)
+              : String(value ?? ''),
+      }));
+  });
 
+  const [error, setError] = useState('');
+
+  const setField = (key: string, value: unknown) =>
+    setForm((current) => ({ ...current, [key]: value }));
+
+  const setClient = (key: string, value: string) =>
+    setField(key, value);
+
+  const addCustomField = () =>
+    setCustomFields((current) => [...current, { key: '', value: '' }]);
+
+  const updateCustomField = (
+    index: number,
+    key: 'key' | 'value',
+    value: string,
+  ) =>
+    setCustomFields((current) =>
+      current.map((row, rowIndex) =>
+        rowIndex === index ? { ...row, [key]: value } : row,
+      ),
+    );
+
+  const removeCustomField = (index: number) =>
+    setCustomFields((current) =>
+      current.filter((_, rowIndex) => rowIndex !== index),
+    );
+
+  const buildRecord = () => {
+    const result: AnyRecord = {
+      ...form,
+      updatedAt: new Date().toISOString(),
+    };
+
+    for (const field of fields) {
       if (
-        !parsed ||
-        typeof parsed !==
-          "object" ||
-        Array.isArray(
-          parsed,
-        )
+        field.type === 'number' &&
+        result[field.key] !== '' &&
+        result[field.key] !== undefined
       ) {
-        return setError(
-          "Record must be an object.",
-        );
+        const numberValue = Number(result[field.key]);
+        result[field.key] = Number.isFinite(numberValue)
+          ? numberValue
+          : '';
       }
 
-      onSave(
-        section,
-        {
-          ...parsed,
-          updatedAt:
-            new Date().toISOString(),
-        },
-      );
-    } catch {
-      setError(
-        "Invalid JSON.",
-      );
+      if (
+        typeof result[field.key] === 'string' &&
+        (field.key === 'tags' || field.key === 'services')
+      ) {
+        result[field.key] = result[field.key]
+          .split(',')
+          .map((value: string) => value.trim())
+          .filter(Boolean);
+      }
     }
+
+    for (const row of customFields) {
+      const key = row.key.trim();
+      if (!key) continue;
+      result[key] = row.value.trim();
+    }
+
+    return result;
+  };
+
+  function save() {
+    const result = buildRecord();
+
+    for (const field of fields) {
+      if (
+        field.required &&
+        !String(result[field.key] ?? '').trim()
+      ) {
+        setError(`${field.label} is required.`);
+        return;
+      }
+    }
+
+    setError('');
+    void onSave(section, result);
   }
 
   return (
@@ -5604,99 +5774,240 @@ function RecordModal({
       <button
         type="button"
         className="modal-backdrop"
-        onClick={
-          onClose
-        }
+        onClick={onClose}
         aria-label="Close"
       />
 
-      <section className="json-editor-modal">
+      <section className="drawer-modal">
         <div className="drawer-header">
           <div>
             <span className="eyebrow">
-              {initial
-                ? "EDIT"
-                : "ADD"}
+              {initial ? 'EDIT RECORD' : 'NEW RECORD'}
             </span>
-
             <h2>
-              {
-                LABEL[
-                  section
-                ]
-              }
+              {initial
+                ? titleOf(initial, section)
+                : `Add ${LABEL[section].replace(/s$/, '')}`}
             </h2>
           </div>
 
           <button
             type="button"
             className="modal-close"
-            onClick={
-              onClose
-            }
+            onClick={onClose}
           >
             ×
           </button>
         </div>
 
-        <div className="json-editor-body">
-          <p className="field-help">
-            Single-page module editor. Existing record shape is preserved.
-          </p>
-
-          <textarea
-            className="json-editor"
-            rows={25}
-            value={
-              value
-            }
-            onChange={(
-              event,
-            ) => {
-              setValue(
-                event.target
-                  .value,
-              );
-
-              setError(
-                "",
-              );
-            }}
-            spellCheck={
-              false
-            }
-          />
-
-          {error ? (
-            <div className="form-error">
-              {
-                error
-              }
+        <form
+          className="drawer-body"
+          onSubmit={(event) => {
+            event.preventDefault();
+            save();
+          }}
+        >
+          <section className="form-card">
+            <div className="panel-heading">
+              <div>
+                <span className="eyebrow">STRUCTURED ENTRY</span>
+                <h3>{LABEL[section]} details</h3>
+              </div>
+              <span className="record-count">{fields.length} fields</span>
             </div>
-          ) : null}
+
+            <div className="form-grid">
+              {fields.map((field) => {
+                const value =
+                  form[field.key] ??
+                  (field.type === 'checkbox' ? false : '');
+
+                if (field.type === 'checkbox') {
+                  return (
+                    <label
+                      key={field.key}
+                      className={`switch-row ${field.wide ? 'field-wide-switch' : ''}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={Boolean(value)}
+                        onChange={(event) =>
+                          setField(field.key, event.target.checked)
+                        }
+                      />
+                      <span>{field.label}</span>
+                    </label>
+                  );
+                }
+
+                if (field.key === 'clientId') {
+                  return (
+                    <Field key={field.key} label={field.label}>
+                      <select
+                        value={String(value ?? '')}
+                        onChange={(event) =>
+                          setClient(field.key, event.target.value)
+                        }
+                      >
+                        <option value="">Unassigned</option>
+                        {clients.map((client) => (
+                          <option key={client.id} value={client.clientId}>
+                            {client.clientId} — {txt(client.name ?? client.companyName)}
+                          </option>
+                        ))}
+                      </select>
+                      <small className="field-help-inline">
+                        Select the HCS client that owns this record.
+                      </small>
+                    </Field>
+                  );
+                }
+
+                if (field.key === 'websiteId') {
+                  return (
+                    <Field key={field.key} label={field.label}>
+                      <select
+                        value={String(value ?? '')}
+                        onChange={(event) =>
+                          setField(field.key, event.target.value)
+                        }
+                      >
+                        <option value="">Unassigned</option>
+                        {websites.map((website, index) => {
+                          const id = idOf(website, index);
+                          return (
+                            <option key={id} value={id}>
+                              {id} — {titleOf(website, 'websites')}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </Field>
+                  );
+                }
+
+                return (
+                  <Field key={field.key} label={field.label}>
+                    {field.type === 'textarea' ? (
+                      <textarea
+                        value={String(value ?? '')}
+                        placeholder={field.placeholder}
+                        required={field.required}
+                        rows={field.wide ? 6 : 4}
+                        onChange={(event) =>
+                          setField(field.key, event.target.value)
+                        }
+                      />
+                    ) : field.type === 'select' ? (
+                      <select
+                        value={String(value ?? '')}
+                        required={field.required}
+                        onChange={(event) =>
+                          setField(field.key, event.target.value)
+                        }
+                      >
+                        {(field.options ?? []).map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type={field.type ?? 'text'}
+                        value={String(value ?? '')}
+                        placeholder={field.placeholder}
+                        required={field.required}
+                        min={field.type === 'number' ? 0 : undefined}
+                        onChange={(event) =>
+                          setField(field.key, event.target.value)
+                        }
+                      />
+                    )}
+                    {field.help ? (
+                      <small className="field-help-inline">{field.help}</small>
+                    ) : null}
+                  </Field>
+                );
+              })}
+            </div>
+          </section>
+
+          <section className="form-card">
+            <div className="panel-heading">
+              <div>
+                <span className="eyebrow">CUSTOM DATA</span>
+                <h3>Additional fields</h3>
+              </div>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={addCustomField}
+              >
+                ＋ Add Field
+              </button>
+            </div>
+
+            <p className="field-help">
+              Existing fields that are not part of the standard module form appear here, so old records are not lost.
+            </p>
+
+            {customFields.length ? (
+              <div className="form-grid custom-field-grid">
+                {customFields.map((row, index) => (
+                  <div
+                    key={`custom-${index}`}
+                    className="custom-field-row"
+                  >
+                    <input
+                      value={row.key}
+                      placeholder="Field name"
+                      onChange={(event) =>
+                        updateCustomField(index, 'key', event.target.value)
+                      }
+                    />
+                    <input
+                      value={row.value}
+                      placeholder="Value"
+                      onChange={(event) =>
+                        updateCustomField(index, 'value', event.target.value)
+                      }
+                    />
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => removeCustomField(index)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Empty
+                title="No custom fields"
+                detail="Use Add Field when you need information outside the standard module form."
+              />
+            )}
+          </section>
+
+          {error ? <div className="form-error">{error}</div> : null}
 
           <div className="drawer-footer">
             <button
               type="button"
               className="secondary-button"
-              onClick={
-                onClose
-              }
+              onClick={onClose}
             >
               Cancel
             </button>
-
-            <button
-              type="button"
-              className="primary-button"
-              onClick={
-                save
-              }
-            >
-              Save Record
+            <button type="submit" className="primary-button">
+              {initial
+                ? 'Update Record'
+                : `Add ${LABEL[section].replace(/s$/, '')}`}
             </button>
           </div>
-        </div>
+        </form>
       </section>
     </div>
   );
