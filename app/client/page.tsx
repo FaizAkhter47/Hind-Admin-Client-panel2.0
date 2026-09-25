@@ -2952,7 +2952,7 @@ export default function ClientPage() {
           <MetricCard
             label="Open Issues"
             value={
-              openTechnicalIssues
+              0
             }
             detail="Technical issues"
             icon="!"
@@ -4733,7 +4733,7 @@ export default function ClientPage() {
       <div className="client-loading-screen">
         <div className="client-loading-card">
           <Image
-            src="/logo.png"
+            src="/images/logo.png"
             alt="Hind Consultancy Services"
             width={190}
             height={58}
@@ -4941,7 +4941,7 @@ export default function ClientPage() {
               aria-label="Hind Consultancy Services"
             >
               <Image
-                src="/logo.png"
+                src="/images/logo.png"
                 alt="Hind Consultancy Services"
                 width={128}
                 height={40}
